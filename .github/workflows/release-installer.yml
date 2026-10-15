@@ -31,6 +31,7 @@ jobs:
           if ($version -notmatch '^2\.0\.\d+$') { throw "Unexpected version: $version" }
           $tag = "v$version"
           $out = Join-Path $env:RUNNER_TEMP "release_$version"
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
           $installer = Join-Path $out "installer"
           $update = Join-Path $out "update"
           New-Item -ItemType Directory -Path $installer, $update -Force | Out-Null
