@@ -707,7 +707,29 @@ def main():
     log("=== TELEGRAM AI SENDER LAUNCHER ===")
     log(f"Текущая версия: {current_version}")
 
-    next_check = 0
+    # Apply a published update before starting the application. This is
+    # important when the installed application cannot start until a fix is
+    # installed (for example, first-run authorization support).
+    try:
+        release = get_latest_release()
+        if (
+            release is not None
+            and release["version"] > current_version_tuple
+        ):
+            package_path = prepare_release(release)
+            if not apply_update(package_path, release["tag"]):
+                log("Предварительное обновление не удалось. Запуск отменён.")
+                return 1
+
+            current_version = get_current_version()
+            current_version_tuple = parse_version(current_version)
+            log("Предварительное обновление завершено.")
+
+    except Exception as exc:
+        log(f"Не удалось проверить обновления перед запуском: {exc}")
+        # Do not block normal startup just because the network is unavailable.
+
+    next_check = time.time() + CHECK_INTERVAL
 
     while True:
         try:
