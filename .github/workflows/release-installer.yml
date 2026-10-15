@@ -4,10 +4,6 @@ on:
   push:
     branches:
       - feature/auto-updates
-    paths:
-      - '.github/workflows/release-installer.yml'
-      - 'version.txt'
-      - 'build_installer.ps1'
   workflow_dispatch:
 
 permissions:
