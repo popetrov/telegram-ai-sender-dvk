@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 
 from datetime import datetime
@@ -114,6 +115,54 @@ def download_bytes(url, accept=None):
 # GITHUB RELEASE DISCOVERY
 # ============================================================
 
+def get_latest_release_from_atom():
+    """Fallback that discovers the latest release without the GitHub API."""
+    feed_url = f"https://github.com/{REPOSITORY}/releases.atom"
+    try:
+        raw = download_bytes(
+            feed_url,
+            accept="application/atom+xml, application/xml",
+        )
+        root = ET.fromstring(raw)
+    except Exception as exc:
+        log(f"Не удалось прочитать публичную ленту релизов GitHub: {exc}")
+        return None
+
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    entry = root.find("atom:entry", namespace)
+    if entry is None:
+        log("В публичной ленте GitHub нет опубликованных релизов.")
+        return None
+
+    id_element = entry.find("atom:id", namespace)
+    release_id = (
+        id_element.text.strip()
+        if id_element is not None and id_element.text
+        else ""
+    )
+    match = re.search(r"/tag/([^/\s]+)$", release_id)
+    if not match:
+        log("Не удалось определить версию релиза из ленты GitHub.")
+        return None
+
+    tag = match.group(1)
+    try:
+        version = parse_version(tag)
+    except ValueError:
+        log("В ленте GitHub обнаружен некорректный номер версии.")
+        return None
+
+    package_name = f"telegram_ai_sender_{tag}.zip"
+    base_url = f"https://github.com/{REPOSITORY}/releases/download/{tag}"
+    log("Используем публичную ленту релизов вместо GitHub API.")
+    return {
+        "tag": tag,
+        "version": version,
+        "package_url": f"{base_url}/{package_name}",
+        "checksum_url": f"{base_url}/{package_name}.sha256",
+    }
+
+
 def get_latest_release():
     try:
         raw = download_bytes(
@@ -122,61 +171,50 @@ def get_latest_release():
         )
         release = json.loads(raw.decode("utf-8"))
 
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            log("На GitHub пока нет опубликованного релиза.")
-        else:
-            log(f"GitHub вернул HTTP {exc.code}.")
-        return None
+        if release.get("draft") or release.get("prerelease"):
+            return None
 
-    except Exception as exc:
-        log(f"Не удалось проверить релизы: {exc}")
-        return None
-
-    if release.get("draft") or release.get("prerelease"):
-        return None
-
-    tag = release.get("tag_name", "").strip()
-
-    try:
+        tag = release.get("tag_name", "").strip()
         version = parse_version(tag)
-    except ValueError:
-        log("У релиза некорректный номер версии.")
-        return None
+        assets = release.get("assets", [])
+        package_name = f"telegram_ai_sender_{tag}.zip"
+        checksum_name = package_name + ".sha256"
 
-    assets = release.get("assets", [])
-    package_name = f"telegram_ai_sender_{tag}.zip"
-    checksum_name = package_name + ".sha256"
+        packages = [
+            item for item in assets
+            if item.get("name") == package_name
+        ]
+        checksums = [
+            item for item in assets
+            if item.get("name") == checksum_name
+        ]
 
-    packages = [
-        item for item in assets
-        if item.get("name") == package_name
-    ]
-    checksums = [
-        item for item in assets
-        if item.get("name") == checksum_name
-    ]
+        if len(packages) != 1 or len(checksums) != 1:
+            log(
+                "Релиз пропущен: необходимы ZIP-пакет "
+                "и соответствующий файл SHA-256."
+            )
+            return None
 
-    if len(packages) != 1 or len(checksums) != 1:
-        log(
-            "Релиз пропущен: необходимы ZIP-пакет "
-            "и соответствующий файл SHA-256."
-        )
-        return None
+        package_url = packages[0].get("browser_download_url")
+        checksum_url = checksums[0].get("browser_download_url")
+        if not package_url or not checksum_url:
+            log("В релизе отсутствуют ссылки на файлы.")
+            return None
 
-    package_url = packages[0].get("browser_download_url")
-    checksum_url = checksums[0].get("browser_download_url")
+        return {
+            "tag": tag,
+            "version": version,
+            "package_url": package_url,
+            "checksum_url": checksum_url,
+        }
 
-    if not package_url or not checksum_url:
-        log("В релизе отсутствуют ссылки на файлы.")
-        return None
-
-    return {
-        "tag": tag,
-        "version": version,
-        "package_url": package_url,
-        "checksum_url": checksum_url,
-    }
+    except urllib.error.HTTPError as exc:
+        log(f"GitHub API вернул HTTP {exc.code}; пробуем публичную ленту.")
+        return get_latest_release_from_atom()
+    except Exception as exc:
+        log(f"Не удалось получить релиз через GitHub API: {exc}")
+        return get_latest_release_from_atom()
 
 
 # ============================================================
@@ -669,7 +707,29 @@ def main():
     log("=== TELEGRAM AI SENDER LAUNCHER ===")
     log(f"Текущая версия: {current_version}")
 
-    next_check = 0
+    # Apply a published update before starting the application. This is
+    # important when the installed application cannot start until a fix is
+    # installed (for example, first-run authorization support).
+    try:
+        release = get_latest_release()
+        if (
+            release is not None
+            and release["version"] > current_version_tuple
+        ):
+            package_path = prepare_release(release)
+            if not apply_update(package_path, release["tag"]):
+                log("Предварительное обновление не удалось. Запуск отменён.")
+                return 1
+
+            current_version = get_current_version()
+            current_version_tuple = parse_version(current_version)
+            log("Предварительное обновление завершено.")
+
+    except Exception as exc:
+        log(f"Не удалось проверить обновления перед запуском: {exc}")
+        # Do not block normal startup just because the network is unavailable.
+
+    next_check = time.time() + CHECK_INTERVAL
 
     while True:
         try:
