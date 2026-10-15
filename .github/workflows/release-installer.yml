@@ -1,0 +1,154 @@
+name: Build installer and publish release
+
+on:
+  push:
+    branches:
+      - feature/auto-updates
+    paths:
+      - '.github/workflows/release-installer.yml'
+      - 'version.txt'
+      - 'build_installer.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: feature/auto-updates
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content version.txt -Raw).Trim()
+          if ($version -notmatch '^2\.0\.\d+$') { throw "Unexpected version: $version" }
+          $tag = "v$version"
+          $out = Join-Path $env:RUNNER_TEMP "release_$version"
+          $installer = Join-Path $out "installer"
+          $update = Join-Path $out "update"
+          New-Item -ItemType Directory -Path $installer, $update -Force | Out-Null
+
+          $runtime = @('.env.example','ai.py','arbitration_api.py','bot.py','config.py','database.py','launcher.py','main.py','migrate_sync.py','products.json','requirements.txt','telegram_client.py','updater.py')
+          foreach ($file in $runtime) {
+            if (!(Test-Path $file -PathType Leaf)) { throw "Missing required file: $file" }
+            Copy-Item $file $installer
+          }
+          if (!(Test-Path prompts -PathType Container)) { throw 'prompts folder missing' }
+          Copy-Item prompts (Join-Path $installer 'prompts') -Recurse
+          Set-Content (Join-Path $installer 'version.txt') $version -Encoding ascii
+
+          @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          chcp 65001 >nul
+          if not exist "main.py" (echo ERROR: main.py missing. Extract the full ZIP first.& pause & exit /b 1)
+          if not exist "launcher.py" (echo ERROR: launcher.py missing.& pause & exit /b 1)
+          if not exist "requirements.txt" (echo ERROR: requirements.txt missing.& pause & exit /b 1)
+          py -3.11 --version >nul 2>&1
+          if errorlevel 1 (echo Python 3.11 is required: https://www.python.org/downloads/& pause & exit /b 1)
+          echo [1/3] Creating virtual environment...
+          if not exist "venv\Scripts\python.exe" py -3.11 -m venv venv
+          if errorlevel 1 goto ERROR
+          echo [2/3] Installing dependencies...
+          "venv\Scripts\python.exe" -m pip install -r requirements.txt
+          if errorlevel 1 goto ERROR
+          echo [3/3] Preparing configuration...
+          if not exist ".env" copy ".env.example" ".env" >nul
+          if errorlevel 1 goto ERROR
+          if not exist "data" mkdir "data"
+          echo.
+          echo Installation completed. Edit .env, then run start.bat.
+          echo Existing .env and data files were not overwritten.
+          pause
+          exit /b 0
+          :ERROR
+          echo Installation failed. Existing configuration was not deleted.
+          pause
+          exit /b 1
+          '@ | Set-Content (Join-Path $installer 'install.bat') -Encoding ascii
+
+          @'
+          @echo off
+          setlocal
+          cd /d "%~dp0"
+          chcp 65001 >nul
+          if not exist "venv\Scripts\python.exe" (echo Run install.bat first.& pause & exit /b 1)
+          "venv\Scripts\python.exe" launcher.py
+          set "RC=%ERRORLEVEL%"
+          if not "%RC%"=="0" pause
+          exit /b %RC%
+          '@ | Set-Content (Join-Path $installer 'start.bat') -Encoding ascii
+
+          $updateFiles = @('main.py','bot.py','database.py','updater.py')
+          foreach ($file in $updateFiles) {
+            if (!(Test-Path $file -PathType Leaf)) { throw "Missing update file: $file" }
+            Copy-Item $file $update
+          }
+          Set-Content (Join-Path $update 'version.txt') $version -Encoding ascii
+
+          python -m py_compile (Get-ChildItem $installer -Filter '*.py' | ForEach-Object { $_.FullName })
+          if ($LASTEXITCODE -ne 0) { throw 'Installer Python syntax check failed' }
+          python -m py_compile (Get-ChildItem $update -Filter '*.py' | ForEach-Object { $_.FullName })
+          if ($LASTEXITCODE -ne 0) { throw 'Update Python syntax check failed' }
+
+          $updateZip = Join-Path $out "telegram_ai_sender_$tag.zip"
+          $installerZip = Join-Path $out "telegram_ai_sender_installer_$version.zip"
+          Compress-Archive -Path (Join-Path $update '*') -DestinationPath $updateZip -CompressionLevel Optimal
+          Compress-Archive -Path (Join-Path $installer '*') -DestinationPath $installerZip -CompressionLevel Optimal
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $z = [System.IO.Compression.ZipFile]::OpenRead($updateZip)
+          try {
+            $actual = @($z.Entries | ForEach-Object FullName | Sort-Object)
+            $expected = @('bot.py','database.py','main.py','updater.py','version.txt') | Sort-Object
+            if (Compare-Object $expected $actual) { throw "Unexpected update ZIP contents: $($actual -join ', ')" }
+          } finally { $z.Dispose() }
+
+          $z = [System.IO.Compression.ZipFile]::OpenRead($installerZip)
+          try {
+            $names = @($z.Entries | ForEach-Object FullName)
+            foreach ($required in @('launcher.py','install.bat','start.bat','main.py','version.txt','prompts/bg.md')) {
+              if ($names -notcontains $required) { throw "Installer missing: $required" }
+            }
+            foreach ($forbidden in @('.env','telegram_sender.session','data/local.sqlite')) {
+              if ($names -contains $forbidden) { throw "Personal file included: $forbidden" }
+            }
+          } finally { $z.Dispose() }
+
+          foreach ($zip in @($updateZip,$installerZip)) {
+            $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content "$zip.sha256" "$hash  $(Split-Path $zip -Leaf)" -Encoding ascii
+          }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
+          "UPDATE_ZIP=$updateZip" >> $env:GITHUB_ENV
+          "INSTALLER_ZIP=$installerZip" >> $env:GITHUB_ENV
+          "UPDATE_SHA=$updateZip.sha256" >> $env:GITHUB_ENV
+          "INSTALLER_SHA=$installerZip.sha256" >> $env:GITHUB_ENV
+          Write-Host "Built and verified release $tag"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Telegram AI Sender ${{ env.RELEASE_TAG }}
+          target_commitish: feature/auto-updates
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            ${{ env.UPDATE_ZIP }}
+            ${{ env.UPDATE_SHA }}
+            ${{ env.INSTALLER_ZIP }}
+            ${{ env.INSTALLER_SHA }}
