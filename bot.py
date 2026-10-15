@@ -160,10 +160,11 @@ def save_access_requests(requests: dict) -> None:
 
 
 def get_admin_telegram_id() -> int | None:
-    # Read directly from the environment so existing installations can
-    # use access approval without replacing config.py during auto-update.
+    # Fall back to the environment for existing installations whose
+    # config.py predates ADMIN_TELEGRAM_ID.
     value = str(
-        os.getenv("ADMIN_TELEGRAM_ID", getattr(config, "ADMIN_TELEGRAM_ID", ""))
+        getattr(config, "ADMIN_TELEGRAM_ID", "")
+        or os.getenv("ADMIN_TELEGRAM_ID", "")
         or ""
     ).strip()
 
