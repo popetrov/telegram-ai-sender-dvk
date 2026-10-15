@@ -1,0 +1,12 @@
+.env
+*.session
+data/
+venv/
+__pycache__/
+*.pyc
+
+# Резервные копии кода
+*_before_*.py
+bot_before*.py
+database_before*.py
+main_before*.py

@@ -1,0 +1,31 @@
+{
+  "БГ": {
+    "prompt": "bg.md",
+    "aliases": [
+      "бг",
+      "банковская гарантия",
+      "bank guarantee"
+    ]
+  },
+  "Кредит": {
+    "prompt": "credit.md",
+    "aliases": [
+      "кредит",
+      "кредиты",
+      "credit"
+    ]
+  },
+  "Право_ООО": {
+    "prompt": "pravo_ooo.md",
+    "aliases": [
+      "право_ооо"
+    ]
+  },
+  "Закупки": {
+    "prompt": "zakupki_konsalt.md",
+    "aliases": [
+      "закупки",
+      "двк закупки"
+    ]
+  }
+}
