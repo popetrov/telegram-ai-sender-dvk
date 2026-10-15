@@ -99,6 +99,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installer Python syntax check failed' }
           python -m py_compile (Get-ChildItem $update -Filter '*.py' | ForEach-Object { $_.FullName })
           if ($LASTEXITCODE -ne 0) { throw 'Update Python syntax check failed' }
+          Get-ChildItem -Path $installer, $update -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
 
           $updateZip = Join-Path $out "telegram_ai_sender_$tag.zip"
           $installerZip = Join-Path $out "telegram_ai_sender_installer_$version.zip"
