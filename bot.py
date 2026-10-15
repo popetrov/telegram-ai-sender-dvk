@@ -239,6 +239,23 @@ async def request_access_command(
     ) or "Имя не указано"
 
     requests = load_access_requests()
+    existing_request = next(
+        (
+            request
+            for request in requests.values()
+            if isinstance(request, dict)
+            and request.get("status") == "pending"
+            and request.get("user_id") == user.id
+        ),
+        None,
+    )
+    if existing_request:
+        await message.reply_text(
+            "Ваша заявка уже отправлена и ожидает решения администратора. "
+            "Повторно отправлять её не нужно."
+        )
+        return
+
     requests[request_id] = {
         "user_id": user.id,
         "username": user.username or "",
