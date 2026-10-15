@@ -88,7 +88,7 @@ jobs:
           exit /b %RC%
           '@ | Set-Content (Join-Path $installer 'start.bat') -Encoding ascii
 
-          $updateFiles = @('main.py','bot.py','database.py','updater.py')
+          $updateFiles = @('main.py','bot.py','config.py','database.py','updater.py')
           foreach ($file in $updateFiles) {
             if (!(Test-Path $file -PathType Leaf)) { throw "Missing update file: $file" }
             Copy-Item $file $update
@@ -110,7 +110,7 @@ jobs:
           $z = [System.IO.Compression.ZipFile]::OpenRead($updateZip)
           try {
             $actual = @($z.Entries | ForEach-Object FullName | Sort-Object)
-            $expected = @('bot.py','database.py','main.py','updater.py','version.txt') | Sort-Object
+            $expected = @('bot.py','config.py','database.py','main.py','updater.py','version.txt') | Sort-Object
             if (Compare-Object $expected $actual) { throw "Unexpected update ZIP contents: $($actual -join ', ')" }
           } finally { $z.Dispose() }
 
