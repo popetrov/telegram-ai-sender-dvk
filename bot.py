@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -52,61 +53,6 @@ REQUIRED_COLUMNS = ["ИНН", "ФИО", "Юзернейм", "Продукт"]
 QUEUE_KEY = "prepared_send_queue"
 PREPARING_KEY = "preparing_import"
 SCHEDULE_TASK_KEY = "scheduled_send_task"
-
-
-def load_allowed_users() -> set[int]:
-    if not ALLOWED_USERS_FILE.exists():
-        raise RuntimeError(
-            f"Не найден файл разрешённых пользователей: "
-            f"{ALLOWED_USERS_FILE}"
-        )
-
-    try:
-        data = json.loads(
-            ALLOWED_USERS_FILE.read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            "Не удалось прочитать data/allowed_users.json"
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise RuntimeError(
-            "Формат allowed_users.json должен содержать объект "
-            "с полем allowed_users."
-        )
-
-    raw_users = data.get("allowed_users")
-
-    if not isinstance(raw_users, list):
-        raise RuntimeError(
-            "В allowed_users.json поле allowed_users "
-            "должно быть списком Telegram user ID."
-        )
-
-    allowed_users = set()
-
-    for value in raw_users:
-        if isinstance(value, bool):
-            raise RuntimeError(
-                "В allowed_users.json обнаружен некорректный ID."
-            )
-
-        try:
-            user_id = int(value)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "В allowed_users.json обнаружен некорректный ID."
-            ) from exc
-
-        if user_id <= 0:
-            raise RuntimeError(
-                "Telegram user ID должен быть положительным числом."
-            )
-
-        allowed_users.add(user_id)
-
-    return allowed_users
 
 
 def load_allowed_users() -> set[int]:
@@ -286,7 +232,7 @@ async def request_access_command(
         )
         return
 
-    request_id = __import__("secrets").token_hex(6)
+    request_id = secrets.token_hex(6)
     username = f"@{user.username}" if user.username else "не указан"
     display_name = " ".join(
         part for part in [user.first_name, user.last_name] if part
