@@ -140,7 +140,7 @@ def get_latest_release_from_atom():
         if id_element is not None and id_element.text
         else ""
     )
-    match = re.search(r"/tag/([^/\\s]+)$", release_id)
+    match = re.search(r"/tag/([^/\s]+)$", release_id)
     if not match:
         log("Не удалось определить версию релиза из ленты GitHub.")
         return None
