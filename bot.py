@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import os
 import secrets
 from datetime import datetime
 from pathlib import Path
@@ -159,7 +160,12 @@ def save_access_requests(requests: dict) -> None:
 
 
 def get_admin_telegram_id() -> int | None:
-    value = str(getattr(config, "ADMIN_TELEGRAM_ID", "") or "").strip()
+    # Read directly from the environment so existing installations can
+    # use access approval without replacing config.py during auto-update.
+    value = str(
+        os.getenv("ADMIN_TELEGRAM_ID", getattr(config, "ADMIN_TELEGRAM_ID", ""))
+        or ""
+    ).strip()
 
     try:
         admin_id = int(value)
