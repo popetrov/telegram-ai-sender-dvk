@@ -1,49 +1,42 @@
 @echo off
-chcp 65001 >nul
 setlocal
-
 cd /d "%~dp0"
 
-echo ==========================================
-echo     УСТАНОВКА TELEGRAM AI SENDER
-echo ==========================================
+echo TELEGRAM AI SENDER INSTALLER
 echo.
 
 if not exist "main.py" (
-    echo ОШИБКА: Не найдена main.py.
-    echo Распакуйте архив проекта перед запуском.
+    echo ERROR: main.py not found.
+    echo Extract the project ZIP archive first.
     pause
     exit /b 1
 )
 
 py -3.11 --version >nul 2>&1
 if errorlevel 1 (
-    echo ОШИБКА: Не найден Python 3.11.
-    echo Установите Python 3.11 и повторите запуск.
-    echo https://www.python.org/downloads/
+    echo ERROR: Python 3.11 is not installed.
+    echo Install Python 3.11 from https://www.python.org/downloads/
     pause
     exit /b 1
 )
 
-echo [1/4] Создание виртуального окружения...
+echo [1/3] Creating virtual environment...
 
 if not exist "venv\Scripts\python.exe" (
     py -3.11 -m venv venv
     if errorlevel 1 goto ERROR
 )
 
-echo.
-echo [2/4] Установка зависимостей...
+echo [2/3] Installing dependencies...
 
 "venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto ERROR
 
-echo.
-echo [3/4] Подготовка конфигурации...
+echo [3/3] Preparing configuration...
 
 if not exist ".env" (
     if not exist ".env.example" (
-        echo ОШИБКА: Не найден .env.example.
+        echo ERROR: .env.example not found.
         goto ERROR
     )
     copy ".env.example" ".env" >nul
@@ -51,23 +44,16 @@ if not exist ".env" (
 )
 
 echo.
-echo [4/4] Установка завершена.
-echo.
-echo Следующий шаг:
-echo 1. Откройте файл .env и внесите свои ключи.
-echo 2. Сохраните файл.
-echo 3. Запустите бота командой:
-echo    venv\Scripts\python.exe main.py
-echo.
-echo Telegram-сессия будет использоваться локально.
-echo Не передавайте файл .env и файлы *.session другим людям.
+echo Installation completed.
+echo Edit your .env file and enter your own keys.
+echo Then run: venv\Scripts\python.exe main.py
 echo.
 pause
 exit /b 0
 
 :ERROR
 echo.
-echo ОШИБКА: Установка не завершена.
-echo Проверьте сообщение выше и повторите попытку.
+echo ERROR: Installation failed.
+echo Contact your manager and send a screenshot.
 pause
 exit /b 1
