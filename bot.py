@@ -40,6 +40,7 @@ from telegram_client import client as telegram_client
 
 
 ALLOWED_USERS_FILE = Path("data/allowed_users.json")
+ACCESS_REQUESTS_FILE = Path("data/access_requests.json")
 DATA_DIR = Path("data")
 
 MAX_EXCEL_SIZE_BYTES = 20 * 1024 * 1024
@@ -108,11 +109,327 @@ def load_allowed_users() -> set[int]:
     return allowed_users
 
 
+def load_allowed_users() -> set[int]:
+    if not ALLOWED_USERS_FILE.exists():
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ALLOWED_USERS_FILE.write_text(
+            json.dumps({"allowed_users": []}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    try:
+        data = json.loads(
+            ALLOWED_USERS_FILE.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Не удалось прочитать data/allowed_users.json"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "Формат allowed_users.json должен содержать объект "
+            "с полем allowed_users."
+        )
+
+    raw_users = data.get("allowed_users")
+
+    if not isinstance(raw_users, list):
+        raise RuntimeError(
+            "В allowed_users.json поле allowed_users "
+            "должно быть списком Telegram user ID."
+        )
+
+    allowed_users = set()
+
+    for value in raw_users:
+        if isinstance(value, bool):
+            raise RuntimeError(
+                "В allowed_users.json обнаружен некорректный ID."
+            )
+
+        try:
+            user_id = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "В allowed_users.json обнаружен некорректный ID."
+            ) from exc
+
+        if user_id <= 0:
+            raise RuntimeError(
+                "Telegram user ID должен быть положительным числом."
+            )
+
+        allowed_users.add(user_id)
+
+    return allowed_users
+
+
+def save_allowed_users(user_ids: set[int]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = ALLOWED_USERS_FILE.with_suffix(".json.tmp")
+    temp_path.write_text(
+        json.dumps(
+            {"allowed_users": sorted(user_ids)},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temp_path.replace(ALLOWED_USERS_FILE)
+
+
+def load_access_requests() -> dict:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not ACCESS_REQUESTS_FILE.exists():
+        return {}
+
+    try:
+        data = json.loads(
+            ACCESS_REQUESTS_FILE.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            "Не удалось прочитать data/access_requests.json"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "Формат data/access_requests.json должен быть объектом."
+        )
+
+    return data
+
+
+def save_access_requests(requests: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    temp_path = ACCESS_REQUESTS_FILE.with_suffix(".json.tmp")
+    temp_path.write_text(
+        json.dumps(requests, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(ACCESS_REQUESTS_FILE)
+
+
+def get_admin_telegram_id() -> int | None:
+    value = str(getattr(config, "ADMIN_TELEGRAM_ID", "") or "").strip()
+
+    try:
+        admin_id = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    return admin_id if admin_id > 0 else None
+
+
 def user_is_allowed(update: Update) -> bool:
     if update.effective_user is None:
         return False
 
     return update.effective_user.id in load_allowed_users()
+
+
+def onboarding_text(user_id: int) -> str:
+    return (
+        "Добро пожаловать в Telegram AI Sender — бот пока не подключён "
+        "к разрешённым пользователям.\n\n"
+        "Как подключиться:\n"
+        "1. Убедитесь, что программа установлена и файл .env заполнен "
+        "вашими ключами.\n"
+        "2. Отправьте команду /request_access — она отправит заявку "
+        "администратору.\n"
+        "3. Дождитесь личного уведомления о решении. До одобрения "
+        "обработка Excel и отправка сообщений недоступны.\n\n"
+        f"Ваш Telegram ID: {user_id}\n\n"
+        "После одобрения отправьте Excel .xlsx с колонками "
+        "ИНН, ФИО, Юзернейм, Продукт. Затем используйте /confirm, "
+        "чтобы подготовить сообщения. Бот покажет очередь и предложит "
+        "время отправки; отправка начинается только после отдельного "
+        "подтверждения. /queue — восстановить очередь, /cancel — "
+        "отменить запланированную отправку.\n\n"
+        "Если заявку не удаётся отправить, сообщите администратору "
+        "имя этого бота и попросите один раз открыть его и нажать Start."
+    )
+
+
+async def request_access_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if message is None or user is None or chat is None:
+        return
+
+    if chat.type != "private":
+        await message.reply_text(
+            "Подать заявку можно только в личном чате с этим ботом."
+        )
+        return
+
+    if user.id in load_allowed_users():
+        await message.reply_text(
+            "Доступ уже разрешён. Отправьте Excel-файл .xlsx, "
+            "чтобы начать работу."
+        )
+        return
+
+    admin_id = get_admin_telegram_id()
+    if admin_id is None:
+        await message.reply_text(
+            "Заявка пока не настроена: администратор не указал "
+            "ADMIN_TELEGRAM_ID в конфигурации этого бота. "
+            "Передайте это сообщение администратору."
+        )
+        return
+
+    request_id = __import__("secrets").token_hex(6)
+    username = f"@{user.username}" if user.username else "не указан"
+    display_name = " ".join(
+        part for part in [user.first_name, user.last_name] if part
+    ) or "Имя не указано"
+
+    requests = load_access_requests()
+    requests[request_id] = {
+        "user_id": user.id,
+        "username": user.username or "",
+        "display_name": display_name,
+        "chat_id": chat.id,
+        "created_at": datetime.now().astimezone().isoformat(),
+        "status": "pending",
+    }
+    save_access_requests(requests)
+
+    keyboard = InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton(
+                "Разрешить",
+                callback_data=f"access_approve_{request_id}",
+            ),
+            InlineKeyboardButton(
+                "Отклонить",
+                callback_data=f"access_reject_{request_id}",
+            ),
+        ]]
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=(
+                "Новая заявка на подключение Telegram AI Sender.\n\n"
+                f"Имя: {display_name}\n"
+                f"Username: {username}\n"
+                f"Telegram ID: {user.id}\n"
+                f"Заявка: {request_id}\n\n"
+                "Разрешить доступ этому Telegram-пользователю?"
+            ),
+            reply_markup=keyboard,
+        )
+    except Exception as exc:
+        requests.pop(request_id, None)
+        save_access_requests(requests)
+        await message.reply_text(
+            "Не удалось доставить заявку администратору. "
+            "Попросите его открыть личный чат с этим ботом и нажать "
+            "Start, затем отправьте /request_access ещё раз.\n"
+            f"Техническая причина: {type(exc).__name__}."
+        )
+        return
+
+    await message.reply_text(
+        "Заявка отправлена администратору. Доступ откроется только "
+        "после его подтверждения. Я сообщу вам результат здесь."
+    )
+
+
+async def access_decision_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+
+    admin_id = get_admin_telegram_id()
+    if (
+        admin_id is None
+        or update.effective_user is None
+        or update.effective_user.id != admin_id
+        or update.effective_chat is None
+        or update.effective_chat.type != "private"
+    ):
+        await query.answer(
+            "Только администратор может принимать решение.",
+            show_alert=True,
+        )
+        return
+
+    parts = (query.data or "").split("_")
+    if len(parts) != 3 or parts[0] != "access":
+        await query.answer("Некорректная заявка.", show_alert=True)
+        return
+
+    decision, request_id = parts[1], parts[2]
+    if decision not in {"approve", "reject"}:
+        await query.answer("Неизвестное действие.", show_alert=True)
+        return
+
+    requests = load_access_requests()
+    request = requests.get(request_id)
+    if not isinstance(request, dict) or request.get("status") != "pending":
+        await query.answer(
+            "Заявка уже обработана или не найдена.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        requester_id = int(request["user_id"])
+    except (KeyError, TypeError, ValueError):
+        await query.answer(
+            "В заявке некорректный Telegram ID.",
+            show_alert=True,
+        )
+        return
+
+    if decision == "approve":
+        allowed_users = load_allowed_users()
+        allowed_users.add(requester_id)
+        save_allowed_users(allowed_users)
+        result_text = (
+            "Доступ разрешён. Теперь отправьте /start в боте "
+            "Telegram AI Sender, чтобы начать работу."
+        )
+        admin_result = "Доступ разрешён."
+        request["status"] = "approved"
+    else:
+        result_text = (
+            "Администратор отклонил заявку на подключение. "
+            "Если это ошибка, свяжитесь с администратором."
+        )
+        admin_result = "Заявка отклонена. Доступ не изменён."
+        request["status"] = "rejected"
+
+    request["decided_at"] = datetime.now().astimezone().isoformat()
+    request["decided_by"] = admin_id
+    save_access_requests(requests)
+
+    await query.answer(admin_result)
+    await query.edit_message_text(
+        (query.message.text or "Заявка на подключение") + "\n\n" + admin_result
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=requester_id,
+            text=result_text,
+        )
+    except Exception:
+        pass
 
 
 def clean_value(value) -> str:
@@ -373,14 +690,17 @@ async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    if not user_is_allowed(update):
-        await update.effective_message.reply_text(
-            "Нет доступа. Обратитесь к администратору "
-            "в Telegram: @popetrov"
-        )
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
         return
 
-    await update.effective_message.reply_text(
+    if not user_is_allowed(update):
+        await message.reply_text(onboarding_text(user.id))
+        return
+
+    await message.reply_text(
         "Telegram AI Sender готов.\n\n"
         "Отправьте Excel-файл .xlsx с колонками:\n"
         "ИНН, ФИО, Юзернейм, Продукт.\n\n"
@@ -1678,6 +1998,15 @@ def create_bot() -> Application:
 
     application.add_handler(
         CommandHandler("start", start_command)
+    )
+    application.add_handler(
+        CommandHandler("request_access", request_access_command)
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            access_decision_callback,
+            pattern=r"^access_(approve|reject)_[a-f0-9]{12}$",
+        )
     )
     application.add_handler(
         CommandHandler("confirm", confirm_command)
