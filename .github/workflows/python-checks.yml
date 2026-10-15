@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - feature/manager-access-approval
+      - feature/auto-updates
 
 jobs:
   syntax-and-tests:
