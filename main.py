@@ -1,7 +1,12 @@
 import asyncio
 from pathlib import Path
 
-from telegram_client import connect, disconnect
+from getpass import getpass
+
+from telethon.errors import SessionPasswordNeededError
+
+import config
+from telegram_client import client, connect, disconnect
 from bot import (
     create_bot,
     QUEUE_KEY,
@@ -55,10 +60,48 @@ async def wait_for_safe_update(application):
         await asyncio.sleep(CHECK_INTERVAL)
 
 
+async def ensure_telegram_authorized():
+    """Run first-time Telethon login in the console when no session exists."""
+    await client.connect()
+
+    if await client.is_user_authorized():
+        return
+
+    phone = (config.TELEGRAM_PHONE or "").strip()
+    if not phone:
+        phone = input(
+            "Введите номер телефона Telegram в международном формате: "
+        ).strip()
+
+    if not phone:
+        raise RuntimeError(
+            "Номер телефона не указан. Заполните TELEGRAM_PHONE в .env."
+        )
+
+    print()
+    print("Для первого запуска требуется авторизация Telegram.")
+    sent_code = await client.send_code_request(phone)
+    code = input("Введите код, полученный в Telegram: ").strip()
+
+    try:
+        await client.sign_in(
+            phone=phone,
+            code=code,
+            phone_code_hash=sent_code.phone_code_hash,
+        )
+    except SessionPasswordNeededError:
+        password = getpass("Введите пароль двухэтапной проверки Telegram: ")
+        await client.sign_in(password=password)
+
+    me = await client.get_me()
+    print(f"Авторизация Telegram завершена. ID аккаунта: {me.id}")
+
+
 async def main():
     bot = create_bot()
 
     try:
+        await ensure_telegram_authorized()
         await connect()
 
         print("=== TELEGRAM SENDER ===")
