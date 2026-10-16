@@ -21,6 +21,12 @@
       "право_ооо"
     ]
   },
+  "Право_ИП": {
+    "prompt": "pravo_ip.md",
+    "aliases": [
+      "право_ип"
+    ]
+  },
   "Закупки": {
     "prompt": "zakupki_konsalt.md",
     "aliases": [
