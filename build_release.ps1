@@ -1,18 +1,24 @@
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
-$version = '2.0.1'
+$version = '2.0.8'
 
 $files = @(
     'main.py',
     'bot.py',
     'database.py',
-    'updater.py'
+    'updater.py',
+    'products.json',
+    'prompts\bg.md',
+    'prompts\credit.md',
+    'prompts\pravo_ooo.md',
+    'prompts\pravo_ip.md',
+    'prompts\zakupki_konsalt.md'
 )
 
-$outDir = Join-Path $root 'data\updates\release_v2.0.1'
+$outDir = Join-Path $root "data\updates\release_v$version"
 $stage = Join-Path $outDir 'stage'
-$zip = Join-Path $outDir 'telegram_ai_sender_v2.0.1.zip'
+$zip = Join-Path $outDir "telegram_ai_sender_v$version.zip"
 $shaFile = $zip + '.sha256'
 
 try {
@@ -37,9 +43,14 @@ try {
         Out-Null
 
     foreach ($name in $files) {
-        Copy-Item `
-            -LiteralPath (Join-Path $root $name) `
-            -Destination (Join-Path $stage $name)
+        $source = Join-Path $root $name
+        $destination = Join-Path $stage $name
+        $destinationDirectory = Split-Path -Parent $destination
+
+        New-Item -ItemType Directory -Path $destinationDirectory -Force |
+            Out-Null
+
+        Copy-Item -LiteralPath $source -Destination $destination
     }
 
     Set-Content `
@@ -71,6 +82,7 @@ try {
     try {
         $actualNames = @(
             $archive.Entries |
+                Where-Object { !$_.FullName.EndsWith('/') } |
                 ForEach-Object { $_.FullName } |
                 Sort-Object
         )
@@ -79,6 +91,12 @@ try {
             'bot.py',
             'database.py',
             'main.py',
+            'products.json',
+            'prompts/bg.md',
+            'prompts/credit.md',
+            'prompts/pravo_ip.md',
+            'prompts/pravo_ooo.md',
+            'prompts/zakupki_konsalt.md',
             'updater.py',
             'version.txt'
         ) | Sort-Object
