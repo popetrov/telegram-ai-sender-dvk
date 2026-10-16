@@ -4,6 +4,7 @@ from pathlib import Path
 from getpass import getpass
 
 from telethon.errors import SessionPasswordNeededError
+from telethon.tl import functions
 
 import config
 from telegram_client import client, connect, disconnect
@@ -60,6 +61,30 @@ async def wait_for_safe_update(application):
         await asyncio.sleep(CHECK_INTERVAL)
 
 
+def _print_code_delivery(sent_code, stage):
+    """Show Telegram's selected code-delivery route without exposing secrets."""
+    current_type = getattr(sent_code, "type", None)
+    print(
+        f"{stage}: способ доставки кода — {type(current_type).__name__}.",
+        flush=True,
+    )
+
+    next_type = getattr(sent_code, "next_type", None)
+    if next_type is not None:
+        print(
+            "Следующий способ, который Telegram может разрешить: "
+            f"{type(next_type).__name__}.",
+            flush=True,
+        )
+
+    timeout = getattr(sent_code, "timeout", None)
+    if timeout is not None:
+        print(
+            f"Интервал до следующего способа доставки: {timeout} сек.",
+            flush=True,
+        )
+
+
 async def ensure_telegram_authorized():
     """Run first-time Telethon login in the console when no session exists."""
     await client.connect()
@@ -80,8 +105,46 @@ async def ensure_telegram_authorized():
 
     print()
     print("Для первого запуска требуется авторизация Telegram.")
-    sent_code = await client.send_code_request(phone)
-    code = input("Введите код, полученный в Telegram: ").strip()
+    try:
+        sent_code = await client.send_code_request(phone)
+    except Exception as exc:
+        print(
+            f"Telegram не принял запрос кода: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
+
+    _print_code_delivery(sent_code, "Первый запрос")
+
+    code = input(
+        "Введите код из Telegram (Enter — запросить повторную отправку): "
+    ).strip()
+
+    if not code:
+        print("Запрашиваем повторную отправку через Telegram...")
+        try:
+            sent_code = await client(
+                functions.auth.ResendCodeRequest(
+                    phone,
+                    sent_code.phone_code_hash,
+                )
+            )
+        except Exception as exc:
+            print(
+                "Telegram отклонил повторную отправку: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            raise
+
+        _print_code_delivery(sent_code, "Повторный запрос")
+        code = input("Введите код из Telegram: ").strip()
+
+    if not code:
+        raise RuntimeError(
+            "Код не введён. Авторизация остановлена; "
+            "файл сессии не удалялся."
+        )
 
     try:
         await client.sign_in(
@@ -104,7 +167,7 @@ async def main():
         await ensure_telegram_authorized()
         await connect()
 
-        print("=== TELEGRAM SENDER — UPDATE TEST 2.0.7 ===")
+        print("=== TELEGRAM AI SENDER 2.0.11 ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")
