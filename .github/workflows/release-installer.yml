@@ -1,3 +1,4 @@
+
 name: Build installer and publish release
 
 on:
@@ -12,6 +13,7 @@ permissions:
 jobs:
   build-and-release:
     runs-on: windows-latest
+
     steps:
       - name: Checkout release source
         uses: actions/checkout@v4
@@ -27,21 +29,48 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
           $version = (Get-Content version.txt -Raw).Trim()
-          if ($version -notmatch '^2\.0\.\d+$') { throw "Unexpected version: $version" }
+          if ($version -notmatch '^2\.0\.\d+$') {
+            throw "Unexpected version: $version"
+          }
+
           $tag = "v$version"
           $out = Join-Path $env:RUNNER_TEMP "release_$version"
           New-Item -ItemType Directory -Path $out -Force | Out-Null
+
           $installer = Join-Path $out "installer"
           $update = Join-Path $out "update"
           New-Item -ItemType Directory -Path $installer, $update -Force | Out-Null
 
-          $runtime = @('.env.example','ai.py','arbitration_api.py','bot.py','config.py','database.py','launcher.py','main.py','migrate_sync.py','products.json','requirements.txt','telegram_client.py','updater.py')
+          # Полный установочный пакет
+          $runtime = @(
+            '.env.example',
+            'ai.py',
+            'arbitration_api.py',
+            'bot.py',
+            'config.py',
+            'database.py',
+            'launcher.py',
+            'main.py',
+            'migrate_sync.py',
+            'products.json',
+            'requirements.txt',
+            'telegram_client.py',
+            'updater.py'
+          )
+
           foreach ($file in $runtime) {
-            if (!(Test-Path $file -PathType Leaf)) { throw "Missing required file: $file" }
+            if (!(Test-Path $file -PathType Leaf)) {
+              throw "Missing required file: $file"
+            }
             Copy-Item $file $installer
           }
-          if (!(Test-Path prompts -PathType Container)) { throw 'prompts folder missing' }
+
+          if (!(Test-Path prompts -PathType Container)) {
+            throw 'prompts folder missing'
+          }
+
           Copy-Item prompts (Join-Path $installer 'prompts') -Recurse
           Set-Content (Join-Path $installer 'version.txt') $version -Encoding ascii
 
@@ -88,53 +117,153 @@ jobs:
           exit /b %RC%
           '@ | Set-Content (Join-Path $installer 'start.bat') -Encoding ascii
 
-          $updateFiles = @('main.py','bot.py','database.py','updater.py')
+          # Пакет обновления: юридическая логика, продукты и промпты
+          $updateFiles = @(
+            'ai.py',
+            'arbitration_api.py',
+            'bot.py',
+            'database.py',
+            'main.py',
+            'products.json',
+            'updater.py'
+          )
+
           foreach ($file in $updateFiles) {
-            if (!(Test-Path $file -PathType Leaf)) { throw "Missing update file: $file" }
+            if (!(Test-Path $file -PathType Leaf)) {
+              throw "Missing update file: $file"
+            }
             Copy-Item $file $update
           }
+
+          if (!(Test-Path prompts -PathType Container)) {
+            throw 'prompts folder missing'
+          }
+
+          Copy-Item prompts (Join-Path $update 'prompts') -Recurse
           Set-Content (Join-Path $update 'version.txt') $version -Encoding ascii
 
-          python -m py_compile (Get-ChildItem $installer -Filter '*.py' | ForEach-Object { $_.FullName })
-          if ($LASTEXITCODE -ne 0) { throw 'Installer Python syntax check failed' }
-          python -m py_compile (Get-ChildItem $update -Filter '*.py' | ForEach-Object { $_.FullName })
-          if ($LASTEXITCODE -ne 0) { throw 'Update Python syntax check failed' }
-          Get-ChildItem -Path $installer, $update -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
+          # Проверка синтаксиса Python
+          $installerPython = @(
+            Get-ChildItem $installer -Filter '*.py' -File |
+              ForEach-Object { $_.FullName }
+          )
 
+          python -m py_compile $installerPython
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Installer Python syntax check failed'
+          }
+
+          $updatePython = @(
+            Get-ChildItem $update -Filter '*.py' -File |
+              ForEach-Object { $_.FullName }
+          )
+
+          python -m py_compile $updatePython
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Update Python syntax check failed'
+          }
+
+          Get-ChildItem -Path $installer, $update -Directory -Filter '__pycache__' |
+            Remove-Item -Recurse -Force
+
+          # Создание ZIP-архивов
           $updateZip = Join-Path $out "telegram_ai_sender_$tag.zip"
           $installerZip = Join-Path $out "telegram_ai_sender_installer_$version.zip"
-          Compress-Archive -Path (Join-Path $update '*') -DestinationPath $updateZip -CompressionLevel Optimal
-          Compress-Archive -Path (Join-Path $installer '*') -DestinationPath $installerZip -CompressionLevel Optimal
+
+          Compress-Archive -Path (Join-Path $update '*') `
+            -DestinationPath $updateZip -CompressionLevel Optimal
+
+          Compress-Archive -Path (Join-Path $installer '*') `
+            -DestinationPath $installerZip -CompressionLevel Optimal
 
           Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          # Проверка полного состава архива обновления
+          $expectedUpdateNames = @(
+            'ai.py',
+            'arbitration_api.py',
+            'bot.py',
+            'database.py',
+            'main.py',
+            'products.json',
+            'prompts/bg.md',
+            'prompts/credit.md',
+            'prompts/pravo_ip.md',
+            'prompts/pravo_ooo.md',
+            'prompts/zakupki_konsalt.md',
+            'updater.py',
+            'version.txt'
+          ) | Sort-Object
+
           $z = [System.IO.Compression.ZipFile]::OpenRead($updateZip)
           try {
-            $actual = @($z.Entries | ForEach-Object FullName | Sort-Object)
-            $expected = @('bot.py','database.py','main.py','updater.py','version.txt') | Sort-Object
-            if (Compare-Object $expected $actual) { throw "Unexpected update ZIP contents: $($actual -join ', ')" }
-          } finally { $z.Dispose() }
+            $actualUpdateNames = @(
+              $z.Entries |
+                Where-Object { -not $_.FullName.EndsWith('/') } |
+                ForEach-Object FullName |
+                Sort-Object
 
+            $difference = Compare-Object $expectedUpdateNames $actualUpdateNames
+            if ($difference) {
+              throw "Unexpected update ZIP contents: $($actualUpdateNames -join ', ')"
+            }
+          }
+          finally {
+            $z.Dispose()
+          }
+
+          # Проверка установочного архива
           $z = [System.IO.Compression.ZipFile]::OpenRead($installerZip)
           try {
-            $names = @($z.Entries | ForEach-Object FullName)
-            foreach ($required in @('launcher.py','install.bat','start.bat','main.py','version.txt','prompts/bg.md')) {
-              if ($names -notcontains $required) { throw "Installer missing: $required" }
-            }
-            foreach ($forbidden in @('.env','telegram_sender.session','data/local.sqlite')) {
-              if ($names -contains $forbidden) { throw "Personal file included: $forbidden" }
-            }
-          } finally { $z.Dispose() }
+            $installerNames = @($z.Entries | ForEach-Object FullName)
 
-          foreach ($zip in @($updateZip,$installerZip)) {
+            foreach ($required in @(
+              'ai.py',
+              'arbitration_api.py',
+              'launcher.py',
+              'install.bat',
+              'start.bat',
+              'main.py',
+              'products.json',
+              'version.txt',
+              'prompts/bg.md',
+              'prompts/credit.md',
+              'prompts/pravo_ip.md',
+              'prompts/pravo_ooo.md',
+              'prompts/zakupki_konsalt.md'
+            )) {
+              if ($installerNames -notcontains $required) {
+                throw "Installer missing: $required"
+              }
+            }
+
+            foreach ($forbidden in @(
+              '.env',
+              'telegram_sender.session',
+              'data/local.sqlite'
+            )) {
+              if ($installerNames -contains $forbidden) {
+                throw "Personal file included: $forbidden"
+              }
+            }
+          }
+          finally {
+            $z.Dispose()
+          }
+
+          # Контрольные суммы SHA-256
+          foreach ($zip in @($updateZip, $installerZip)) {
             $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
             Set-Content "$zip.sha256" "$hash  $(Split-Path $zip -Leaf)" -Encoding ascii
           }
+
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           "UPDATE_ZIP=$updateZip" >> $env:GITHUB_ENV
           "INSTALLER_ZIP=$installerZip" >> $env:GITHUB_ENV
           "UPDATE_SHA=$updateZip.sha256" >> $env:GITHUB_ENV
           "INSTALLER_SHA=$installerZip.sha256" >> $env:GITHUB_ENV
+
           Write-Host "Built and verified release $tag"
 
       - name: Publish GitHub Release

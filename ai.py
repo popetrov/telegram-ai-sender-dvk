@@ -11,8 +11,8 @@ MODEL = "gpt-5-mini"
 BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
 
-# Судебный API разрешён только для этого продукта.
-ARBITRATION_PRODUCT = "Право_ООО"
+# Судебный API разрешён только для этих двух продуктов.
+ARBITRATION_PRODUCTS = {"Право_ООО", "Право_ИП"}
 
 
 def load_products():
@@ -100,9 +100,9 @@ def load_prompt(product, inn):
     if not inn_value:
         raise ValueError("ИНН компании не указан.")
 
-    # Поддерживаем «Конкретный ИНН», {ИНН} и {{ИНН}}.
+    # Поддерживаем заполнители «Конкретный ИНН», {ИНН} и {{ИНН}}.
     placeholder_pattern = re.compile(
-        r"Конкретный\s+ИНН|\{\{?\s*ИНН\s*\}?\}",
+        r"Конкретный\s+ИНН|\{\{\s*ИНН\s*\}\}|\{\s*ИНН\s*\}",
         flags=re.IGNORECASE,
     )
 
@@ -123,9 +123,10 @@ def load_prompt(product, inn):
 
 def get_arbitration_context(inn):
     """
-    Получает судебные данные только для продукта Право_ООО.
+    Получает судебные данные для юридического продукта.
+    Вызывается только для Право_ООО и Право_ИП.
 
-    Ошибка API не останавливает подготовку обычного предложения
+    Ошибка API не останавливает подготовку предложения
     юридических услуг. Результат передаётся в prompt как данные.
     """
     from arbitration_api import find_latest_defendant_case
@@ -183,8 +184,6 @@ def get_arbitration_context(inn):
 def append_arbitration_context(prompt_text, inn):
     """
     Добавляет результат судебного поиска в prompt.
-
-    Вызывается исключительно для продукта Право_ООО.
     Правила подготовки сообщения остаются в продуктовом prompt.
     """
     arbitration_result = get_arbitration_context(inn)
@@ -209,57 +208,13 @@ def append_arbitration_context(prompt_text, inn):
     )
 
 
-def generate_company_analysis(
-    inn,
-    full_name,
-    username,
-    product,
-):
-    normalized_product = normalize_product(product)
-
-    prompt_file, prompt_text = load_prompt(
-        normalized_product,
-        inn,
-    )
-
-    # Вызов судебного API строго ограничен продуктом Право_ООО.
-    # Для БГ, кредита и всех остальных продуктов этот код не выполняется.
-    if normalized_product == ARBITRATION_PRODUCT:
-        prompt_text = append_arbitration_context(
-            prompt_text=prompt_text,
-            inn=inn,
-        )
-
-    if not config.OPENAI_API_KEY:
-        raise RuntimeError(
-            "Не задан OPENAI_API_KEY в настройках окружения."
-        )
-
-    client = OpenAI(api_key=config.OPENAI_API_KEY)
-
-    # Полный выбранный prompt передаётся через input.
-    # Дополнительный параметр instructions не используется.
-    response = client.responses.create(
-        model=MODEL,
-        tools=[{"type": "web_search"}],
-        input=prompt_text,
-    )
-
-    raw_result = response.output_text
-
-    if not raw_result or not raw_result.strip():
-        raise RuntimeError("Первый ИИ не вернул результат.")
-
-    return {
-        "raw_result": raw_result,
-        "product": normalized_product,
-        "prompt_file": prompt_file,
-        "prompt_text": prompt_text,
-        "model": MODEL,
-    }
-
-
 def extract_message_from_markers(raw_result):
+    """
+    Извлекает сообщение между маркерами:
+    ГОТОВОЕ СООБЩЕНИЕ и КОНЕЦ СООБЩЕНИЯ.
+    Возвращает исходный текст сообщения без лишних переводов
+    строк по краям.
+    """
     if "ТРЕБУЕТСЯ РУЧНАЯ ПРОВЕРКА" in raw_result.upper():
         raise RuntimeError(
             "Промпт запросил ручную проверку. "
@@ -290,24 +245,68 @@ def extract_message_from_markers(raw_result):
             "Результат нельзя считать готовым сообщением."
         )
 
-    message = raw_result[message_start:end_position]
+    message = raw_result[message_start:end_position].strip()
 
-    if message.startswith("\r\n"):
-        message = message[2:]
-    elif message.startswith("\n"):
-        message = message[1:]
-
-    if message.endswith("\r\n"):
-        message = message[:-2]
-    elif message.endswith("\n"):
-        message = message[:-1]
-
-    if not message.strip():
+    if not message:
         raise RuntimeError(
             "Между маркерами отсутствует текст сообщения."
         )
 
     return message
+
+
+def generate_company_analysis(
+    inn,
+    full_name,
+    username,
+    product,
+):
+    normalized_product = normalize_product(product)
+
+    prompt_file, prompt_text = load_prompt(
+        normalized_product,
+        inn,
+    )
+
+    # Судебный API используется только для Право_ООО и Право_ИП.
+    # Для БГ, кредита, закупок и остальных продуктов вызова нет.
+    if normalized_product in ARBITRATION_PRODUCTS:
+        prompt_text = append_arbitration_context(
+            prompt_text=prompt_text,
+            inn=inn,
+        )
+
+    if not config.OPENAI_API_KEY:
+        raise RuntimeError(
+            "Не задан OPENAI_API_KEY в настройках окружения."
+        )
+
+    client = OpenAI(api_key=config.OPENAI_API_KEY)
+
+    # Полный выбранный prompt передаётся через input.
+    # Дополнительный параметр instructions не используется.
+    response = client.responses.create(
+        model=MODEL,
+        tools=[{"type": "web_search"}],
+        input=prompt_text,
+    )
+
+    raw_result = response.output_text
+
+    if not raw_result or not raw_result.strip():
+        raise RuntimeError("Первый ИИ не вернул результат.")
+
+    # Извлекаем готовое сообщение сразу после получения ответа.
+    final_message = extract_message_from_markers(raw_result)
+
+    return {
+        "raw_result": raw_result,
+        "final_message": final_message,
+        "product": normalized_product,
+        "prompt_file": prompt_file,
+        "prompt_text": prompt_text,
+        "model": MODEL,
+    }
 
 
 def process_client(
@@ -318,7 +317,8 @@ def process_client(
 ):
     from database import save_processed_client
 
-    # Сначала исследование, затем проверка результата.
+    # Сначала исследование и извлечение текста,
+    # затем сохранение результата в базу.
     result = generate_company_analysis(
         inn=inn,
         full_name=full_name,
@@ -327,9 +327,8 @@ def process_client(
     )
 
     raw_result = result["raw_result"]
-    final_message = extract_message_from_markers(raw_result)
+    final_message = result["final_message"]
 
-    # В базу результат записывается только после проверки маркеров.
     saved = save_processed_client(
         inn=inn,
         full_name=full_name,
