@@ -122,6 +122,7 @@ jobs:
             'arbitration_api.py',
             'bot.py',
             'database.py',
+            'launcher.py',
             'main.py',
             'products.json',
             'updater.py'
@@ -179,6 +180,7 @@ jobs:
             'arbitration_api.py',
             'bot.py',
             'database.py',
+            'launcher.py',
             'main.py',
             'products.json',
             'prompts/bg.md',

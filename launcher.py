@@ -44,9 +44,18 @@ POLL_INTERVAL = 2
 HTTP_TIMEOUT = 30
 
 UPDATE_ALLOWLIST = {
-    "main.py",
+    "ai.py",
+    "arbitration_api.py",
     "bot.py",
     "database.py",
+    "launcher.py",
+    "main.py",
+    "products.json",
+    "prompts/bg.md",
+    "prompts/credit.md",
+    "prompts/pravo_ip.md",
+    "prompts/pravo_ooo.md",
+    "prompts/zakupki_konsalt.md",
     "updater.py",
     "version.txt",
 }
@@ -296,10 +305,12 @@ def create_backup():
     existing_files = []
 
     for filename in sorted(UPDATE_ALLOWLIST):
-        source = PROJECT_DIR / filename
+        source = PROJECT_DIR / Path(filename)
 
         if source.is_file():
-            shutil.copy2(source, backup_dir / filename)
+            destination = backup_dir / Path(filename)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
             existing_files.append(filename)
 
     database_path = get_database_path()
@@ -381,14 +392,7 @@ def extract_update(package_path, staging_dir, expected_tag):
                         f"Недопустимый путь в архиве: {info.filename}"
                     )
 
-                # Release files must be at the archive root.
-                if len(parts) != 1:
-                    raise ValueError(
-                        "Файл релиза должен находиться в корне архива: "
-                        f"{info.filename}"
-                    )
-
-                filename = parts[0]
+                filename = "/".join(parts)
 
                 if filename not in UPDATE_ALLOWLIST:
                     raise ValueError(
@@ -411,7 +415,8 @@ def extract_update(package_path, staging_dir, expected_tag):
                 )
 
             for filename, info in selected.items():
-                destination = staging_dir / filename
+                destination = staging_dir / Path(filename)
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(archive.read(info))
 
         staged_version = (
@@ -432,7 +437,11 @@ def extract_update(package_path, staging_dir, expected_tag):
             for path in staging_dir.glob("*.py")
         )
 
-        if len(python_files) != len(UPDATE_ALLOWLIST - {"version.txt"}):
+        expected_python_count = sum(
+            1 for filename in UPDATE_ALLOWLIST
+            if filename.endswith(".py")
+        )
+        if len(python_files) != expected_python_count:
             raise RuntimeError(
                 "В каталоге подготовки не все Python-файлы релиза."
             )
@@ -472,6 +481,7 @@ def replace_file(source, destination, suffix):
     source = Path(source)
     destination = Path(destination)
 
+    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + suffix)
 
     try:
@@ -561,15 +571,15 @@ def restore_backup(backup_dir):
 
     # Remove files that did not exist before the update.
     for filename in UPDATE_ALLOWLIST - existing_files:
-        destination = PROJECT_DIR / filename
+        destination = PROJECT_DIR / Path(filename)
 
         if destination.is_file():
             destination.unlink()
 
     for filename in sorted(existing_files):
         replace_file(
-            backup_dir / filename,
-            PROJECT_DIR / filename,
+            backup_dir / Path(filename),
+            PROJECT_DIR / Path(filename),
             ".rollback_tmp",
         )
 
@@ -603,12 +613,12 @@ def apply_update(package_path, expected_tag):
         installation_started = True
 
         for filename in sorted(UPDATE_ALLOWLIST):
-            source = staging_dir / filename
+            source = staging_dir / Path(filename)
 
             if source.is_file():
                 replace_file(
                     source,
-                    PROJECT_DIR / filename,
+                    PROJECT_DIR / Path(filename),
                     ".update_tmp",
                 )
 
