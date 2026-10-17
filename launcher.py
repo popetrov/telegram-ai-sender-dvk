@@ -104,6 +104,7 @@ def get_current_version():
 # ============================================================
 
 def download_bytes(url, accept=None):
+    """Download HTTPS content, falling back to Windows curl without disabling TLS checks."""
     headers = {
         "User-Agent": "Telegram-AI-Sender-Updater",
     }
@@ -113,11 +114,69 @@ def download_bytes(url, accept=None):
 
     request = urllib.request.Request(url, headers=headers)
 
-    with urllib.request.urlopen(
-        request,
-        timeout=HTTP_TIMEOUT,
-    ) as response:
-        return response.read()
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=HTTP_TIMEOUT,
+        ) as response:
+            return response.read()
+    except Exception as urllib_exc:
+        # On Windows, curl.exe commonly uses the Windows certificate store
+        # (Schannel), which may work when Python's OpenSSL CA configuration
+        # is broken. TLS verification remains enabled; never use -k/--insecure.
+        curl_exe = shutil.which("curl.exe") or shutil.which("curl")
+        if not curl_exe:
+            raise
+
+        command = [
+            curl_exe,
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            str(HTTP_TIMEOUT),
+            "--user-agent",
+            headers["User-Agent"],
+        ]
+
+        if accept:
+            command.extend(["--header", f"Accept: {accept}"])
+
+        command.append(url)
+        log(
+            "HTTPS-запрос через Python не прошёл "
+            f"({type(urllib_exc).__name__}); пробуем curl.exe "
+            "с обычной проверкой сертификата."
+        )
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=HTTP_TIMEOUT + 5,
+                check=False,
+            )
+        except Exception as curl_exc:
+            raise RuntimeError(
+                "HTTPS-запрос не удался через Python "
+                f"({urllib_exc}) и curl.exe ({curl_exc})."
+            ) from curl_exc
+
+        if result.returncode != 0:
+            details = result.stderr.decode(
+                "utf-8",
+                errors="replace",
+            ).strip()
+            raise RuntimeError(
+                "HTTPS-запрос не удался через Python "
+                f"({urllib_exc}) и curl.exe "
+                f"({details or 'неизвестная ошибка'})."
+            ) from urllib_exc
+
+        return result.stdout
 
 
 # ============================================================
