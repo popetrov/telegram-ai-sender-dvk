@@ -1,6 +1,5 @@
 import asyncio
 
-import qrcode
 from pathlib import Path
 
 from getpass import getpass
@@ -64,6 +63,29 @@ async def wait_for_safe_update(application):
 
 def _print_qr_code(url):
     """Render Telegram's temporary login QR directly in the Windows console."""
+    try:
+        import qrcode
+    except ImportError:
+        import subprocess
+        import sys
+
+        print("Устанавливаем компонент для отображения QR-кода...", flush=True)
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "qrcode==8.2"],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            check=False,
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout).strip()
+            raise RuntimeError(
+                "Не удалось установить компонент QR-кода. "
+                "Проверьте доступ к PyPI и повторите запуск. "
+                + (details[-1500:] or "")
+            )
+        import qrcode
+
     qr = qrcode.QRCode(border=1)
     qr.add_data(url)
     qr.make(fit=True)
@@ -115,7 +137,7 @@ async def main():
         await ensure_telegram_authorized()
         await connect()
 
-        print("=== TELEGRAM AI SENDER 2.0.13 ===")
+        print("=== TELEGRAM AI SENDER 2.0.14 ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")
