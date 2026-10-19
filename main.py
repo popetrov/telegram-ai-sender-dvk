@@ -1,10 +1,11 @@
 import asyncio
+
+import qrcode
 from pathlib import Path
 
 from getpass import getpass
 
 from telethon.errors import SessionPasswordNeededError
-from telethon.tl import functions
 
 import config
 from telegram_client import client, connect, disconnect
@@ -61,103 +62,50 @@ async def wait_for_safe_update(application):
         await asyncio.sleep(CHECK_INTERVAL)
 
 
-def _print_code_delivery(sent_code, stage):
-    """Show Telegram's selected code-delivery route without exposing secrets."""
-    current_type = getattr(sent_code, "type", None)
-    print(
-        f"{stage}: способ доставки кода — {type(current_type).__name__}.",
-        flush=True,
-    )
-
-    next_type = getattr(sent_code, "next_type", None)
-    if next_type is not None:
-        print(
-            "Следующий способ, который Telegram может разрешить: "
-            f"{type(next_type).__name__}.",
-            flush=True,
-        )
-
-    timeout = getattr(sent_code, "timeout", None)
-    if timeout is not None:
-        print(
-            f"Интервал до следующего способа доставки: {timeout} сек.",
-            flush=True,
-        )
+def _print_qr_code(url):
+    """Render Telegram's temporary login QR directly in the Windows console."""
+    qr = qrcode.QRCode(border=1)
+    qr.add_data(url)
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
 
 
 async def ensure_telegram_authorized():
-    """Run first-time Telethon login in the console when no session exists."""
+    """Authorize an existing Telethon session or guide the manager through QR login."""
     await client.connect()
 
     if await client.is_user_authorized():
         return
 
-    phone = (config.TELEGRAM_PHONE or "").strip()
-    if not phone:
-        phone = input(
-            "Введите номер телефона Telegram в международном формате: "
-        ).strip()
-
-    if not phone:
-        raise RuntimeError(
-            "Номер телефона не указан. Заполните TELEGRAM_PHONE в .env."
-        )
-
     print()
     print("Для первого запуска требуется авторизация Telegram.")
-    try:
-        sent_code = await client.send_code_request(phone)
-    except Exception as exc:
-        print(
-            f"Telegram не принял запрос кода: {type(exc).__name__}: {exc}",
-            flush=True,
-        )
-        raise
+    print("Откройте Telegram на телефоне: Настройки → Устройства → Подключить устройство.")
+    print("Отсканируйте QR-код, который появится ниже.")
+    print("Не отправляйте QR-код другим людям: он подтверждает вход в аккаунт.")
+    print()
 
-    _print_code_delivery(sent_code, "Первый запрос")
-
-    code = input(
-        "Введите код из Telegram (Enter — запросить повторную отправку): "
-    ).strip()
-
-    if not code:
-        print("Запрашиваем повторную отправку через Telegram...")
+    while True:
         try:
-            sent_code = await client(
-                functions.auth.ResendCodeRequest(
-                    phone,
-                    sent_code.phone_code_hash,
-                )
-            )
+            qr_login = await client.qr_login()
+            _print_qr_code(qr_login.url)
+            print("Ожидаем сканирования QR-кода (60 секунд)...", flush=True)
+            await qr_login.wait(timeout=60)
+            break
+        except asyncio.TimeoutError:
+            print("Время действия QR-кода истекло. Создаём новый...", flush=True)
+        except SessionPasswordNeededError:
+            password = getpass("Введите пароль двухэтапной проверки Telegram: ")
+            await client.sign_in(password=password)
+            break
         except Exception as exc:
             print(
-                "Telegram отклонил повторную отправку: "
-                f"{type(exc).__name__}: {exc}",
+                f"Не удалось выполнить QR-авторизацию: {type(exc).__name__}: {exc}",
                 flush=True,
             )
             raise
 
-        _print_code_delivery(sent_code, "Повторный запрос")
-        code = input("Введите код из Telegram: ").strip()
-
-    if not code:
-        raise RuntimeError(
-            "Код не введён. Авторизация остановлена; "
-            "файл сессии не удалялся."
-        )
-
-    try:
-        await client.sign_in(
-            phone=phone,
-            code=code,
-            phone_code_hash=sent_code.phone_code_hash,
-        )
-    except SessionPasswordNeededError:
-        password = getpass("Введите пароль двухэтапной проверки Telegram: ")
-        await client.sign_in(password=password)
-
     me = await client.get_me()
-    print(f"Авторизация Telegram завершена. ID аккаунта: {me.id}")
+    print(f"Авторизация Telegram завершена. ID аккаунта: {me.id}", flush=True)
 
 
 async def main():
@@ -167,7 +115,7 @@ async def main():
         await ensure_telegram_authorized()
         await connect()
 
-        print("=== TELEGRAM AI SENDER 2.0.11 ===")
+        print("=== TELEGRAM AI SENDER 2.0.13 ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")

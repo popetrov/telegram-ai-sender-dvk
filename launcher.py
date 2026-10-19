@@ -51,6 +51,7 @@ UPDATE_ALLOWLIST = {
     "launcher.py",
     "main.py",
     "products.json",
+    "requirements.txt",
     "prompts/bg.md",
     "prompts/credit.md",
     "prompts/pravo_ip.md",
@@ -668,6 +669,16 @@ def apply_update(package_path, expected_tag):
 
         # No live file is replaced until the package has been
         # fully extracted, version-checked and syntax-checked.
+        live_requirements = PROJECT_DIR / "requirements.txt"
+        staged_requirements = staging_dir / "requirements.txt"
+        dependencies_changed = (
+            staged_requirements.is_file()
+            and (
+                not live_requirements.is_file()
+                or staged_requirements.read_bytes() != live_requirements.read_bytes()
+            )
+        )
+
         backup_dir = create_backup()
         installation_started = True
 
@@ -680,6 +691,30 @@ def apply_update(package_path, expected_tag):
                     PROJECT_DIR / Path(filename),
                     ".update_tmp",
                 )
+
+        if dependencies_changed:
+            log("Обнаружены изменения зависимостей. Устанавливаем их...")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(PROJECT_DIR / "requirements.txt"),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout).strip()
+                raise RuntimeError(
+                    "Не удалось установить обновлённые зависимости: "
+                    + (details[-2500:] or "pip завершился с ошибкой.")
+                )
+            log("Зависимости успешно обновлены.")
 
         installed_version = get_current_version()
 

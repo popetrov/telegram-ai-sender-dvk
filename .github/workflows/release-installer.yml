@@ -125,6 +125,7 @@ jobs:
             'launcher.py',
             'main.py',
             'products.json',
+            'requirements.txt',
             'updater.py'
           )
 
@@ -183,6 +184,7 @@ jobs:
             'launcher.py',
             'main.py',
             'products.json',
+            'requirements.txt',
             'prompts/bg.md',
             'prompts/credit.md',
             'prompts/pravo_ip.md',
