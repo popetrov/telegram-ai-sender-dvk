@@ -3,7 +3,7 @@ name: Build installer and publish release
 on:
   push:
     branches:
-      - release/2.0.15
+      - release/2.0.16
   workflow_dispatch:
 
 permissions:
@@ -17,7 +17,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@v4
         with:
-          ref: release/2.0.15
+          ref: release/2.0.16
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -188,6 +188,7 @@ jobs:
             'prompts/pravo_ip.md',
             'prompts/pravo_ooo.md',
             'prompts/zakupki_konsalt.md',
+            'prompts/Nikolai.md',
             'updater.py',
             'version.txt'
           ) | Sort-Object
@@ -233,6 +234,7 @@ jobs:
               'prompts/pravo_ip.md',
               'prompts/pravo_ooo.md',
               'prompts/zakupki_konsalt.md'
+              'prompts/Nikolai.md'
             )) {
               if ($installerNames -notcontains $required) {
                 throw "Installer missing: $required"
@@ -273,7 +275,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Telegram AI Sender ${{ env.RELEASE_TAG }}
-          target_commitish: release/2.0.15
+          target_commitish: release/2.0.16
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
