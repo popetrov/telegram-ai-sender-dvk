@@ -56,7 +56,6 @@ UPDATE_ALLOWLIST = {
     "prompts/pravo_ip.md",
     "prompts/pravo_ooo.md",
     "prompts/zakupki_konsalt.md",
-    "prompts/Nikolai.md",
     "updater.py",
     "version.txt",
 }
