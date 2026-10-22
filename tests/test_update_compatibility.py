@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import launcher
 
@@ -31,7 +32,8 @@ class ReleaseDiscoveryTests(unittest.TestCase):
                 self.assertEqual(launcher.extract_release_tag(value), "")
 
     def test_fallback_release_has_expected_asset_names(self):
-        release = launcher.release_info_for_tag("v2.0.19", "test")
+        with patch("launcher.log"):
+            release = launcher.release_info_for_tag("v2.0.19", "test")
         self.assertEqual(
             release["package_url"].rsplit("/", 1)[-1],
             "telegram_ai_sender_v2.0.19.zip",
