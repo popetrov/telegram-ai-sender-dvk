@@ -17,12 +17,8 @@ else
     exit 1
 fi
 
-if [ ! -d "venv" ]; then
-    echo "Creating the Python virtual environment..."
-    "$PYTHON_BIN" -m venv venv
-fi
-
-VENV_PYTHON="$PROJECT_DIR/venv/bin/python"
+# Check the interpreter BEFORE creating venv. Otherwise an older system Python
+# could leave behind an unusable virtual environment on the first attempt.
 if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
     echo "Python 3.11 or newer is required. Detected:"
     "$PYTHON_BIN" --version
@@ -30,8 +26,22 @@ if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,
     exit 1
 fi
 
+if [ ! -d "venv" ]; then
+    echo "Creating the Python virtual environment..."
+    "$PYTHON_BIN" -m venv venv
+fi
+
+VENV_PYTHON="$PROJECT_DIR/venv/bin/python"
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "Could not find Python in the virtual environment: $VENV_PYTHON"
+    echo "If the environment was created with an older Python, remove the venv folder and run again."
+    exit 1
+fi
+
+if ! "$VENV_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "The existing virtual environment uses an older Python:"
+    "$VENV_PYTHON" --version
+    echo "Remove the venv folder, install Python 3.11 or newer, and run this script again."
     exit 1
 fi
 
