@@ -137,7 +137,7 @@ async def main():
         await ensure_telegram_authorized()
         await connect()
 
-        print("=== TELEGRAM AI SENDER 2.0.18 ===")
+        print("=== TELEGRAM AI SENDER 2.0.19 ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")
