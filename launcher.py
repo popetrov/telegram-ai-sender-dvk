@@ -183,8 +183,123 @@ def download_bytes(url, accept=None):
 # GITHUB RELEASE DISCOVERY
 # ============================================================
 
+def extract_release_tag(value):
+    """Extract a strict x.y.z release tag from GitHub URLs or Atom IDs."""
+    value = str(value or "").strip()
+    patterns = (
+        r"/releases/tag/(v?\d+\.\d+\.\d+)(?:[/?#]|$)",
+        r"/tag/(v?\d+\.\d+\.\d+)$",
+        r"(?:^|[/,:])((?:v)?\d+\.\d+\.\d+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, value)
+        if match:
+            tag = match.group(1)
+            try:
+                parse_version(tag)
+            except ValueError:
+                continue
+            return tag
+    return ""
+
+
+def release_info_for_tag(tag, source):
+    """Build release asset URLs from a validated release tag."""
+    try:
+        version = parse_version(tag)
+    except ValueError:
+        return None
+
+    package_name = f"telegram_ai_sender_{tag}.zip"
+    base_url = f"https://github.com/{REPOSITORY}/releases/download/{tag}"
+    log(f"Используем {source} для определения последнего релиза.")
+    return {
+        "tag": tag,
+        "version": version,
+        "package_url": f"{base_url}/{package_name}",
+        "checksum_url": f"{base_url}/{package_name}.sha256",
+    }
+
+
+def get_latest_release_from_redirect():
+    """Discover latest release through GitHub's /releases/latest redirect.
+
+    This does not use the rate-limited GitHub REST API. TLS verification
+    remains enabled for both Python and curl.exe.
+    """
+    latest_url = f"https://github.com/{REPOSITORY}/releases/latest"
+    final_url = ""
+
+    request = urllib.request.Request(
+        latest_url,
+        headers={"User-Agent": "Telegram-AI-Sender-Updater"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            final_url = response.geturl()
+    except Exception as python_exc:
+        curl_exe = shutil.which("curl.exe") or shutil.which("curl")
+        if not curl_exe:
+            log(f"Не удалось проверить redirect GitHub: {python_exc}")
+            return None
+
+        command = [
+            curl_exe,
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+            "NUL",
+            "--write-out",
+            "%{url_effective}",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            str(HTTP_TIMEOUT),
+            "--user-agent",
+            "Telegram-AI-Sender-Updater",
+            latest_url,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                timeout=HTTP_TIMEOUT + 5,
+                check=False,
+            )
+        except Exception as curl_exc:
+            log(
+                "Не удалось проверить redirect GitHub через Python "
+                f"({python_exc}) и curl.exe ({curl_exc})."
+            )
+            return None
+
+        if result.returncode != 0:
+            details = result.stderr.decode(
+                "utf-8", errors="replace"
+            ).strip()
+            log(
+                "Не удалось проверить redirect GitHub через Python "
+                f"({python_exc}) и curl.exe "
+                f"({details or 'неизвестная ошибка'})."
+            )
+            return None
+        final_url = result.stdout.decode("utf-8", errors="replace").strip()
+
+    tag = extract_release_tag(final_url)
+    if not tag:
+        log(
+            "GitHub не перенаправил на страницу с распознаваемым "
+            f"номером версии: {final_url!r}"
+        )
+        return None
+
+    return release_info_for_tag(tag, "redirect GitHub")
+
+
 def get_latest_release_from_atom():
-    """Fallback that discovers the latest release without the GitHub API."""
+    """Last-resort fallback using GitHub's public Atom release feed."""
     feed_url = f"https://github.com/{REPOSITORY}/releases.atom"
     try:
         raw = download_bytes(
@@ -202,18 +317,13 @@ def get_latest_release_from_atom():
         log("В публичной ленте GitHub нет опубликованных релизов.")
         return None
 
-    # В Atom id может быть не URL вида /tag/v2.0.17, а
-    # идентификатором tag:github.com,.../v2.0.17. Сначала ищем
-    # ссылку на сам релиз, затем используем последний компонент atom:id.
     tag = ""
     for link in entry.findall("atom:link", namespace):
         href = (link.get("href") or "").strip()
-        rel = (link.get("rel") or "").strip().lower()
-        if href and rel in {"alternate", ""}:
-            match = re.search(r"/releases/tag/([^/?#]+)", href)
-            if match:
-                tag = match.group(1)
-                break
+        candidate = extract_release_tag(href)
+        if candidate:
+            tag = candidate
+            break
 
     if not tag:
         id_element = entry.find("atom:id", namespace)
@@ -222,31 +332,21 @@ def get_latest_release_from_atom():
             if id_element is not None and id_element.text
             else ""
         )
-        # Поддерживаем URL-формат и стандартный GitHub Atom ID,
-        # который заканчивается номером версии.
-        match = re.search(r"(?:/tag/|/)(v?\d+\.\d+\.\d+)$", release_id)
-        if match:
-            tag = match.group(1)
+        tag = extract_release_tag(release_id)
 
     if not tag:
         log("Не удалось определить версию релиза из ленты GitHub.")
         return None
 
-    try:
-        version = parse_version(tag)
-    except ValueError:
-        log("В ленте GitHub обнаружен некорректный номер версии.")
-        return None
+    return release_info_for_tag(tag, "публичную ленту релизов")
 
-    package_name = f"telegram_ai_sender_{tag}.zip"
-    base_url = f"https://github.com/{REPOSITORY}/releases/download/{tag}"
-    log("Используем публичную ленту релизов вместо GitHub API.")
-    return {
-        "tag": tag,
-        "version": version,
-        "package_url": f"{base_url}/{package_name}",
-        "checksum_url": f"{base_url}/{package_name}.sha256",
-    }
+
+def get_latest_release_fallback():
+    """Try two public, non-API release discovery methods in order."""
+    release = get_latest_release_from_redirect()
+    if release is not None:
+        return release
+    return get_latest_release_from_atom()
 
 
 def get_latest_release():
@@ -296,11 +396,14 @@ def get_latest_release():
         }
 
     except urllib.error.HTTPError as exc:
-        log(f"GitHub API вернул HTTP {exc.code}; пробуем публичную ленту.")
-        return get_latest_release_from_atom()
+        log(
+            f"GitHub API вернул HTTP {exc.code}; "
+            "пробуем redirect без API и затем Atom."
+        )
+        return get_latest_release_fallback()
     except Exception as exc:
         log(f"Не удалось получить релиз через GitHub API: {exc}")
-        return get_latest_release_from_atom()
+        return get_latest_release_fallback()
 
 
 # ============================================================
