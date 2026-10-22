@@ -3,7 +3,7 @@ name: Build installer and publish release
 on:
   push:
     branches:
-      - feature/auto-updates
+      - release/2.0.15
   workflow_dispatch:
 
 permissions:
@@ -17,7 +17,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@v4
         with:
-          ref: feature/auto-updates
+          ref: release/2.0.15
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -273,7 +273,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Telegram AI Sender ${{ env.RELEASE_TAG }}
-          target_commitish: feature/auto-updates
+          target_commitish: release/2.0.15
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
