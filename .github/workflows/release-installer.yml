@@ -3,7 +3,7 @@ name: Build installer and publish release
 on:
   push:
     branches:
-      - release/2.0.17
+      - release/2.0.18
   workflow_dispatch:
 
 permissions:
@@ -17,7 +17,7 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@v4
         with:
-          ref: release/2.0.17
+          ref: release/2.0.18
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -136,6 +136,8 @@ jobs:
           }
 
           Copy-Item prompts (Join-Path $update 'prompts') -Recurse
+          # Keep Nikolai.md out of update ZIPs: older launchers reject files outside their allowlist.
+          Remove-Item (Join-Path $update 'prompts/Nikolai.md') -Force -ErrorAction SilentlyContinue
           Set-Content (Join-Path $update 'version.txt') $version -Encoding ascii
 
           # Проверка синтаксиса Python
@@ -188,7 +190,6 @@ jobs:
             'prompts/pravo_ip.md',
             'prompts/pravo_ooo.md',
             'prompts/zakupki_konsalt.md',
-            'prompts/Nikolai.md',
             'updater.py',
             'version.txt'
           ) | Sort-Object
@@ -275,7 +276,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Telegram AI Sender ${{ env.RELEASE_TAG }}
-          target_commitish: release/2.0.17
+          target_commitish: release/2.0.18
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
