@@ -3,7 +3,7 @@ name: Build installer and publish release
 on:
   push:
     branches:
-      - release/2.0.18
+      - release/2.0.19
   workflow_dispatch:
 
 permissions:
@@ -17,12 +17,20 @@ jobs:
       - name: Checkout release source
         uses: actions/checkout@v4
         with:
-          ref: release/2.0.18
+          ref: release/2.0.19
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Test release discovery and legacy compatibility
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Updater compatibility tests failed'
+          }
 
       - name: Build packages
         shell: pwsh
@@ -276,7 +284,7 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Telegram AI Sender ${{ env.RELEASE_TAG }}
-          target_commitish: release/2.0.18
+          target_commitish: release/2.0.19
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
