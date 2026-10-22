@@ -23,6 +23,13 @@ if [ ! -d "venv" ]; then
 fi
 
 VENV_PYTHON="$PROJECT_DIR/venv/bin/python"
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "Python 3.11 or newer is required. Detected:"
+    "$PYTHON_BIN" --version
+    echo "Install Python 3.11 from https://www.python.org/downloads/macos/"
+    exit 1
+fi
+
 if [ ! -x "$VENV_PYTHON" ]; then
     echo "Could not find Python in the virtual environment: $VENV_PYTHON"
     exit 1
