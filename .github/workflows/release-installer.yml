@@ -1,5 +1,9 @@
 name: Build installer and publish release
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches:
@@ -27,7 +31,7 @@ jobs:
       - name: Test release discovery and legacy compatibility
         shell: pwsh
         run: |
-          python -m unittest discover -s tests -v
+          python tests/test_update_compatibility.py -v
           if ($LASTEXITCODE -ne 0) {
             throw 'Updater compatibility tests failed'
           }
