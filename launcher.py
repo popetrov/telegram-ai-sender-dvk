@@ -203,18 +203,36 @@ def get_latest_release_from_atom():
         log("В публичной ленте GitHub нет опубликованных релизов.")
         return None
 
-    id_element = entry.find("atom:id", namespace)
-    release_id = (
-        id_element.text.strip()
-        if id_element is not None and id_element.text
-        else ""
-    )
-    match = re.search(r"/tag/([^/\s]+)$", release_id)
-    if not match:
+    # В Atom id может быть не URL вида /tag/v2.0.17, а
+    # идентификатором tag:github.com,.../v2.0.17. Сначала ищем
+    # ссылку на сам релиз, затем используем последний компонент atom:id.
+    tag = ""
+    for link in entry.findall("atom:link", namespace):
+        href = (link.get("href") or "").strip()
+        rel = (link.get("rel") or "").strip().lower()
+        if href and rel in {"alternate", ""}:
+            match = re.search(r"/releases/tag/([^/?#]+)", href)
+            if match:
+                tag = match.group(1)
+                break
+
+    if not tag:
+        id_element = entry.find("atom:id", namespace)
+        release_id = (
+            id_element.text.strip()
+            if id_element is not None and id_element.text
+            else ""
+        )
+        # Поддерживаем URL-формат и стандартный GitHub Atom ID,
+        # который заканчивается номером версии.
+        match = re.search(r"(?:/tag/|/)(v?\d+\.\d+\.\d+)$", release_id)
+        if match:
+            tag = match.group(1)
+
+    if not tag:
         log("Не удалось определить версию релиза из ленты GitHub.")
         return None
 
-    tag = match.group(1)
     try:
         version = parse_version(tag)
     except ValueError:
