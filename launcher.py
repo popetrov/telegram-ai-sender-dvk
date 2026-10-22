@@ -121,9 +121,9 @@ def download_bytes(url, accept=None):
         ) as response:
             return response.read()
     except Exception as urllib_exc:
-        # On Windows, curl.exe commonly uses the Windows certificate store
-        # (Schannel), which may work when Python's OpenSSL CA configuration
-        # is broken. TLS verification remains enabled; never use -k/--insecure.
+        # curl may use the operating system certificate store when Python TLS
+        # configuration is broken. TLS verification remains enabled; never use
+        # -k/--insecure.
         curl_exe = shutil.which("curl.exe") or shutil.which("curl")
         if not curl_exe:
             raise
@@ -250,7 +250,7 @@ def get_latest_release_from_redirect():
             "--silent",
             "--show-error",
             "--output",
-            "NUL",
+            os.devnull,
             "--write-out",
             "%{url_effective}",
             "--connect-timeout",
