@@ -1,36 +1,44 @@
 # Telegram AI Sender — macOS test setup
 
-> This is an experimental setup guide for the `macos-support-2.0.19` branch. It is not a released or fully verified Mac installer. Keep the Windows 2.0.19 installation unchanged.
+> Экспериментальная сборка для клиента на ветке `macos-support-2.0.19`. Она не является проверенным установщиком: реальный запуск на физическом Mac пока не подтверждён. Существующую Windows-версию 2.0.19 не изменяйте.
 
-## Requirements
+## Требования
 
-- macOS on Apple Silicon or Intel.
-- Python 3.11 recommended.
-- Internet access to install Python packages and reach Telegram, OpenAI, and GitHub.
+- Mac с Apple Silicon (проверяемая конфигурация клиента: M1, macOS Sonoma 14.7.1).
+- Python 3.11.
+- Подключение к интернету для установки Python-зависимостей и доступа к Telegram и используемым API.
 
-Install Python 3.11 from the official Python downloads page:
+Установите Python 3.11 с официальной страницы:
 https://www.python.org/downloads/macos/
 
-## Prepare the project
+## Подготовка проекта
 
-1. Download the project ZIP from the `macos-support-2.0.19` branch in GitHub and extract it into a normal folder.
-2. In Finder, duplicate `.env.example` and name the copy `.env`. If Finder hides dotfiles, use Terminal or a code editor to do this.
-3. Edit `.env` with the buyer's own values. Do not reuse another manager's bot token, Telegram session, or API keys.
-4. Make sure the buyer's configured product prompts are present in `prompts/`. Do not add private keys or session files to GitHub.
+1. Откройте ветку `macos-support-2.0.19` и скачайте ZIP-архив исходного кода. Распакуйте его в отдельную обычную папку.
+2. Создайте копию файла `.env.example` и назовите её `.env`.
+3. Заполните `.env` собственными данными клиента. Не используйте токены бота, Telegram-сессии и API-ключи другого менеджера.
+4. Убедитесь, что в папке `prompts/` находятся необходимые клиенту файлы промптов.
+5. Не добавляйте `.env`, файлы Telegram-сессий `*.session` и папку `data/` в GitHub или в публичный архив.
 
-## Start
+## Запуск
 
-Open Terminal, change directory into the extracted project folder, then run:
+Откройте Terminal, перейдите в распакованную папку проекта и выполните:
 
 ```bash
 bash start_mac.sh
 ```
 
-The script creates a local virtual environment, installs dependencies, checks that `.env` exists, and starts `launcher.py`.
+Скрипт проверит версию Python, создаст виртуальное окружение при необходимости, установит зависимости и запустит `launcher.py`. При первом запуске возможны дополнительные шаги авторизации Telegram.
 
-## Important limitations
+## Обновления
 
-- This branch is experimental and has not yet been tested on a physical Mac.
-- First-run Telegram authorization, Excel import, message sending, scheduled sending, safe updates, and rollback must all be tested before customer use.
-- Do not place `.env`, Telegram `*.session` files, or `data/` into a public ZIP or commit.
-- Do not replace the existing Windows release with this branch.
+В этой клиентской сборке автоматические обновления намеренно отключены. Программа не должна проверять GitHub Releases, скачивать обновления или устанавливать их автоматически. Новые исправления не будут приходить сами по себе; любые изменения для клиента нужно будет отдельно подготовить и передать вручную.
+
+## Что ещё не проверено
+
+- Реальный запуск на физическом Mac с M1 и macOS Sonoma 14.7.1.
+- Первая авторизация Telegram и сохранение сессии.
+- Импорт Excel-файла, обработка строк и проверка дубликатов.
+- Отправка сообщений и запланированная отправка.
+- Корректная работа всех необходимых клиенту функций.
+
+До успешного теста этих сценариев сборку следует считать экспериментальной. Не заменяйте ею существующую Windows-версию.
