@@ -1,3 +1,4 @@
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -90,9 +91,30 @@ class ManualUpdateTests(unittest.TestCase):
         (data/"access_authority").mkdir()
         (data/"access_authority/signing.key").write_bytes(b"private-key")
         updater.prepare(self.source, self.zip, self.digest, self.destination)
-        with sqlite3.connect(self.destination/"data/local.sqlite") as snapshot:
+        with closing(sqlite3.connect(self.destination/"data/local.sqlite")) as snapshot:
             self.assertEqual(snapshot.execute("SELECT name FROM clients").fetchall(), [("client",)])
         self.assertFalse((self.destination/"data/access_authority").exists())
+
+    def test_snapshot_closes_both_connections_before_return(self):
+        source = self.source/"source.sqlite"
+        with closing(sqlite3.connect(source)) as connection:
+            connection.execute("CREATE TABLE clients (name TEXT)")
+            connection.commit()
+        opened = []
+        original = sqlite3.connect
+        class TrackingConnection(sqlite3.Connection):
+            closed = False
+            def close(self):
+                super().close()
+                self.closed = True
+        def connect(*args, **kwargs):
+            connection = original(*args, factory=TrackingConnection, **kwargs)
+            opened.append(connection)
+            return connection
+        with patch("manual_update.sqlite3.connect", side_effect=connect):
+            updater.snapshot_file(source, self.root/"copy.sqlite")
+        self.assertEqual(len(opened), 2)
+        self.assertTrue(all(connection.closed for connection in opened))
 
     def test_three_way_merge_preserves_changes_and_reports_real_conflicts(self):
         base = {"product": {"prompt": "p.md", "model": "old", "aliases": ["a"]}}

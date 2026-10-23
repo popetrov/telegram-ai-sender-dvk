@@ -4,6 +4,7 @@ Use an official package and independently obtained SHA-256. Stop the sender
 before preparing a consistent application-level snapshot. No Telegram calls.
 """
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -162,8 +163,8 @@ def snapshot_file(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.suffix.lower() in {".sqlite", ".sqlite3", ".db", ".session"}:
         # SQLite backup also includes committed WAL contents; do not raw-copy DBs.
-        with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as old:
-            with sqlite3.connect(destination) as new:
+        with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as old:
+            with closing(sqlite3.connect(destination)) as new:
                 old.backup(new)
                 if new.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                     raise ValueError("Snapshot database integrity check failed")
