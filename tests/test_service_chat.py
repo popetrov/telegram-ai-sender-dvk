@@ -67,6 +67,12 @@ class ServiceChatTests(unittest.IsolatedAsyncioTestCase):
             await runtime.refresh(client,'center',self.store)
         client.delete_messages.assert_awaited_once()
         self.assertTrue(conversation.send_message.call_args.kwargs['silent'])
+        self.store.connection_id = 'b'*32
+        client.delete_messages.reset_mock()
+        with patch('access_runtime.secrets.token_hex',return_value='a'*48):
+            await runtime.refresh(client,'center',self.store)
+        encoded = conversation.send_message.call_args.args[0].split(' ',1)[1]
+        self.assertEqual(json.loads(base64.urlsafe_b64decode(encoded))['connection_id'],'b'*32)
 
     async def test_history_cleanup_preserves_administration(self):
         messages = [self.message('/start',True,ident=1), self.message('DVK_SYNC_V1',True,'encrypted.dvk',2),

@@ -92,6 +92,36 @@ class SeparateBotsTests(unittest.IsolatedAsyncioTestCase):
         admin_bot.send_message.assert_awaited_once()
         self.assertIn('подключён',admin_bot.send_message.call_args.args[1])
 
+    async def test_new_launch_notifies_again_but_heartbeat_and_center_restart_do_not(self):
+        self.store.register(42,'m:42')
+        self.store.assign(42,'dvk')
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_chat=SimpleNamespace(type='private'),
+                                 effective_user=SimpleNamespace(id=42),effective_message=message)
+        admin = SimpleNamespace(send_message=AsyncMock())
+        for launch in ['a'*32,'b'*32]:
+            for _ in range(3):
+                # Reconstruct the notifier/app to also simulate a center restart.
+                notices = OwnerNotifications(AuthorityStore(self.store.path))
+                app = create_server('124:service',99,self.signer,self.store,role='service',notices=notices)
+                encoded = base64.urlsafe_b64encode(json.dumps(dict(
+                    subject='m:42',nonce='c'*48,connection_id=launch)).encode()).decode()
+                await app.handlers[0][0].callback(update,SimpleNamespace(args=[encoded]))
+                await notices.flush(admin,99)
+        self.assertEqual(admin.send_message.await_count,2)
+
+    async def test_unapproved_launch_never_generates_connected_notice(self):
+        app = create_server('124:service',99,self.signer,self.store,role='service',notices=self.notices)
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_chat=SimpleNamespace(type='private'),
+                                 effective_user=SimpleNamespace(id=42),effective_message=message)
+        encoded = base64.urlsafe_b64encode(json.dumps(dict(subject='m:42',nonce='c'*48,connection_id='a'*32)).encode()).decode()
+        await app.handlers[0][0].callback(update,SimpleNamespace(args=[encoded]))
+        admin = SimpleNamespace(send_message=AsyncMock())
+        await self.notices.flush(admin,99)
+        admin.send_message.assert_awaited_once()
+        self.assertIn('Ожидает',admin.send_message.call_args.args[1])
+
     async def test_payment_notice_once_per_expiration_and_dvk_exempt(self):
         self.store.company('buyer')
         with self.store.connection() as db:

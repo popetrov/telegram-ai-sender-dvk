@@ -86,11 +86,16 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                 raise ValueError("Invalid request")
             request = json.loads(base64.b64decode(context.args[0], altchars=b"-_", validate=True))
             subject, nonce = request["subject"], request["nonce"]
+            connection_id = request.get('connection_id')
             account_id = update.effective_user.id
             if (not isinstance(subject, str) or not subject.endswith(f":{account_id}")
                     or len(subject) > 200 or not isinstance(nonce, str)
                     or len(nonce) != 48 or any(c not in "0123456789abcdef" for c in nonce)):
                 raise ValueError("Invalid identity or nonce")
+            if connection_id is not None and (
+                    not isinstance(connection_id, str) or len(connection_id) != 32
+                    or any(c not in '0123456789abcdef' for c in connection_id)):
+                raise ValueError('Invalid connection identity')
             subscription_end = None
             if store is not None:
                 new_request = not any(r['account_id'] == account_id for r in store.list_managers())
@@ -114,7 +119,8 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                         f'Новый менеджер: Telegram ID {account_id}. Ожидает подключения.\n'
                         f'Разрешить: /approve {account_id} КОМПАНИЯ')
                 if allowed:
-                    notices.once(f'connected:{subject}',
+                    connection_key = f'connected:{subject}' + (f':{connection_id}' if connection_id else '')
+                    notices.once(connection_key,
                                  f'Менеджер {account_id} подключён. Доступ подтверждён центром.')
             elif new_request:
                 await context.bot.send_message(admin_id,

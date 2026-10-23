@@ -80,7 +80,10 @@ def require_access():
 
 async def refresh(client, authority, store):
     nonce = secrets.token_hex(24)
-    request = json.dumps({"subject": store.subject, "nonce": nonce}, separators=(",", ":"))
+    payload = {"subject": store.subject, "nonce": nonce}
+    if getattr(store, 'connection_id', None):
+        payload['connection_id'] = store.connection_id
+    request = json.dumps(payload, separators=(",", ":"))
     encoded = base64.urlsafe_b64encode(request.encode()).decode()
     # Resolve the configured bot, then accept messages from that peer only.
     async with client.conversation(authority, timeout=30, exclusive=True) as conversation:
@@ -117,6 +120,9 @@ async def start(client):
     account_id = me.id
     _store = LeaseStore(Path("data/access_lease.json"),
                         base64.b64decode(public, validate=True), f"{manager}:{me.id}")
+    # One identity per process launch, unchanged during periodic lease refreshes.
+    # It is never used as access authority and does not extend cached permissions.
+    _store.connection_id = secrets.token_hex(16)
 
     async def poll():
         async with transport_lock:
