@@ -270,6 +270,20 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             update.effective_chat.type = 'group'
             self.assertFalse(bot.user_is_allowed(update))
 
+    async def test_access_status_requires_no_local_approval_for_bound_manager(self):
+        import bot
+        import access_runtime
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_chat=SimpleNamespace(type='private'),
+                                 effective_message=message)
+        with patch.object(access_runtime, 'account_id', 42), \
+             patch('access_runtime.require_access', side_effect=AccessDenied('revoked')), \
+             patch('bot.load_allowed_users', return_value=set()):
+            await bot.access_status_command(update, None)
+        text = message.reply_text.call_args.args[0]
+        self.assertIn('приостановлены', text)
+        self.assertNotIn('локальный доступ', text)
+
     async def test_receiver_commits_before_ack_and_retries_do_not_duplicate(self):
         from telegram.ext import Application
         with tempfile.TemporaryDirectory() as directory:

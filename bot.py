@@ -177,7 +177,7 @@ def get_admin_telegram_id() -> int | None:
     return admin_id if admin_id > 0 else None
 
 
-def user_is_allowed(update: Update) -> bool:
+def is_controller(update: Update) -> bool:
     if update.effective_user is None:
         return False
 
@@ -187,6 +187,12 @@ def user_is_allowed(update: Update) -> bool:
             return False
     elif update.effective_user.id not in load_allowed_users():
         return False
+    return True
+
+
+def user_is_allowed(update: Update) -> bool:
+    if not is_controller(update):
+        return False
     try:
         access_runtime.require_access()
         return True
@@ -195,6 +201,12 @@ def user_is_allowed(update: Update) -> bool:
 
 
 def onboarding_text(user_id: int) -> str:
+    if access_runtime.account_id is not None:
+        if user_id != access_runtime.account_id:
+            return 'Этот личный бот доступен только Telegram-аккаунту, подключённому к программе.'
+        return ('Ожидается разрешение центрального бота @asdvk2026_bot. '
+                'Заявка отправляется программой автоматически. Владелец центра назначает компанию и доступ.\n'
+                f'Ваш Telegram ID: {user_id}\n/access — состояние центрального доступа.')
     return (
         "Добро пожаловать в Telegram AI Sender — бот пока не подключён "
         "к разрешённым пользователям.\n\n"
@@ -221,6 +233,9 @@ async def request_access_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
+    if access_runtime.account_id is not None:
+        await update.effective_message.reply_text(onboarding_text(update.effective_user.id))
+        return
     message = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
@@ -669,7 +684,7 @@ def update_prepared_status(
 
 
 async def access_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user is None or update.effective_user.id not in load_allowed_users():
+    if not is_controller(update):
         await update.effective_message.reply_text("Сначала запросите локальный доступ: /request_access.")
         return
     try:

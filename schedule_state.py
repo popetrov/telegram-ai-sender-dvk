@@ -11,7 +11,7 @@ def save(queue, path=PATH):
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata = {key: queue.get(key) for key in ('owner_user_id', 'chat_id', 'state', 'file_name')}
     metadata['send_at'] = queue['send_at'].isoformat() if queue.get('send_at') else None
-    metadata['prepared_ids'] = [i.get('prepared_id') for i in queue.get('items', [])]
+    metadata['prepared_ids'] = [i.get('prepared_message_id') for i in queue.get('items', [])]
     temp = path.with_suffix('.tmp')
     with temp.open('w', encoding='utf-8') as stream:
         json.dump(metadata, stream, ensure_ascii=False)
