@@ -15,16 +15,23 @@ log = logging.getLogger(__name__)
 
 def register_receiver(application, store, signing_key, encryption_key, notices=None):
     from telegram.ext import MessageHandler, filters
+    upload_failed = False
+    upload_seen = False
 
     async def receive(update, context):
+        nonlocal upload_failed, upload_seen
         if update.effective_chat.type != 'private' or update.effective_message.caption != 'DVK_SYNC_V1':
             return
         document = update.effective_message.document
         if document.file_size is None or document.file_size > MAX_PACKET:
             return
+        stage = 'get_file'
         try:
-            remote = await document.get_file()
-            content = await remote.download_as_bytearray()
+            async with asyncio.timeout(75):
+                remote = await document.get_file(connect_timeout=15, read_timeout=30, pool_timeout=10)
+                stage = 'download'
+                content = await remote.download_as_bytearray(connect_timeout=15, read_timeout=45, pool_timeout=10)
+            stage = 'decrypt_and_validate'
             payload = decrypt(encryption_key, content)
             subject, event_id, data = payload['subject'], payload['event_id'], payload['data']
             if (not isinstance(subject, str) or not isinstance(event_id, str) or len(event_id) != 32
@@ -33,12 +40,18 @@ def register_receiver(application, store, signing_key, encryption_key, notices=N
                     or data.get('data', {}).get('table') not in (*TABLES, 'sync_fragment')):
                 raise ValueError('Invalid sync data')
             digest = event_digest(data)
+            stage = 'save'
             store.receive(update.effective_user.id, subject, event_id, digest, data)
+            stage = 'receipt'
             await update.effective_message.reply_text('DVK_RECEIPT ' + json.dumps(
                 receipt(signing_key, subject, event_id, digest), separators=(',', ':')), disable_notification=True)
+            if upload_failed or not upload_seen:
+                log.info('Encrypted data transfer working; records saved and acknowledged')
+            upload_failed, upload_seen = False, True
         except Exception as exc:
             # Never put client records, tokens or decrypted data into logs.
-            log.warning('Upload rejected or interrupted (%s)', type(exc).__name__)
+            log.warning('Upload interrupted at %s (%s)', stage, type(exc).__name__)
+            upload_failed = True
             if notices is not None:
                 # Requests from unassigned accounts are ordinary onboarding, not alarms.
                 managers = store.list_managers()
@@ -74,9 +87,9 @@ async def start(client):
                     stream = io.BytesIO(packet)
                     stream.name = 'encrypted.dvk'
                     async with transport_lock:
-                        async with client.conversation(authority, timeout=60, exclusive=True) as conversation:
+                        async with client.conversation(authority, timeout=180, exclusive=True) as conversation:
                             sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True, silent=True)
-                            async with asyncio.timeout(60):
+                            async with asyncio.timeout(180):
                                 while True:
                                     response = await conversation.get_response(sent)
                                     if not (response.raw_text or '').startswith('DVK_RECEIPT '):

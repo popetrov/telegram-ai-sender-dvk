@@ -34,6 +34,38 @@ class SeparateBotsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('approve',commands)
         self.assertIn('companies',commands)
         self.assertFalse(any(isinstance(h,MessageHandler) for h in app.handlers[0]))
+        self.assertEqual(app.bot.request.read_timeout,30)
+
+    async def test_download_timeout_is_identified_and_retry_can_save_event(self):
+        import sync_runtime
+        import sync_protocol as protocol
+        self.store.register(42,'m:42')
+        self.store.assign(42,'dvk')
+        cipher = X25519PrivateKey.generate()
+        app = create_server('124:service',99,self.signer,self.store,cipher,role='service')
+        from telegram.ext import MessageHandler
+        callback = next(h.callback for h in app.handlers[0] if isinstance(h,MessageHandler))
+        data = dict(installation='install',data={'table':'clients','row':{'id':1}})
+        packet = protocol.encrypt(protocol.public_text(cipher),dict(subject='m:42',event_id='a'*32,data=data))
+        remote = SimpleNamespace(download_as_bytearray=AsyncMock(side_effect=TimeoutError('do not log file URL')))
+        document = SimpleNamespace(file_size=len(packet),get_file=AsyncMock(return_value=remote))
+        message = SimpleNamespace(caption='DVK_SYNC_V1',document=document,reply_text=AsyncMock())
+        update = SimpleNamespace(effective_chat=SimpleNamespace(type='private'),
+                                 effective_user=SimpleNamespace(id=42),effective_message=message)
+        with self.assertLogs(sync_runtime.log,level='WARNING') as logs:
+            await callback(update,None)
+        self.assertIn('download',logs.output[0])
+        self.assertNotIn('file URL',logs.output[0])
+        message.reply_text.assert_not_awaited()
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0],0)
+        remote.download_as_bytearray.side_effect = None
+        remote.download_as_bytearray.return_value = bytearray(packet)
+        await callback(update,None)
+        message.reply_text.assert_awaited_once()
+        self.assertEqual(remote.download_as_bytearray.call_args.kwargs['read_timeout'],45)
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0],1)
 
     def test_service_has_no_admin_commands(self):
         app = create_server('124:service',99,self.signer,self.store,X25519PrivateKey.generate(),

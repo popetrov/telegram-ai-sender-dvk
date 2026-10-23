@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption, PublicFormat
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler
+from telegram.request import HTTPXRequest
 
 from access_lease import issue
 from authority_store import AuthorityStore
@@ -72,7 +73,10 @@ def initialize_key():
 def create_server(token, admin_id, key, store=None, sync_key=None, *, role='combined', notices=None):
     if role not in ('combined', 'admin', 'service'):
         raise ValueError('Invalid center role')
-    application = Application.builder().token(token).build()
+    application = (Application.builder().token(token)
+                   .request(HTTPXRequest(connect_timeout=15, read_timeout=30, write_timeout=30, pool_timeout=10))
+                   .get_updates_request(HTTPXRequest(connect_timeout=15, read_timeout=40, write_timeout=30, pool_timeout=10))
+                   .build())
 
     async def lease(update, context):
         if update.effective_chat.type != "private":
