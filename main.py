@@ -140,7 +140,7 @@ async def main():
         print("=== TELEGRAM AI SENDER 2.0.19 ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
-        print("Контроль безопасного обновления включён.")
+        print("Автоматические обновления отключены в этой сборке.")
 
         await bot.initialize()
         await bot.start()
