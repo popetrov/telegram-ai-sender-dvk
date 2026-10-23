@@ -144,7 +144,12 @@ class ManualUpdateTests(unittest.TestCase):
 
     def test_symlink_in_local_data_rejected_without_changing_source(self):
         (self.source/"data").mkdir()
-        (self.source/"data/link").symlink_to(self.release, target_is_directory=True)
+        try:
+            (self.source/"data/link").symlink_to(self.release, target_is_directory=True)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows account cannot create symlinks; exercised on Linux/macOS CI')
+            raise
         with self.assertRaises(ValueError):
             updater.prepare(self.source, self.zip, self.digest, self.destination)
         self.assertFalse(self.destination.exists())

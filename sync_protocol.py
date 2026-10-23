@@ -1,0 +1,81 @@
+"""End-to-end encrypted upload and signed, content-bound durable receipt."""
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, PublicFormat, NoEncryption
+from access_lease import canonical
+
+MAX_PACKET = 2 * 1024 * 1024
+AAD = b'DVK_SYNC_V1'
+
+
+def b64(data):
+    return base64.b64encode(data).decode('ascii')
+
+
+def initialize_encryption_key(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return X25519PrivateKey.from_private_bytes(path.read_bytes())
+    key = X25519PrivateKey.generate()
+    with path.open('xb') as stream:
+        stream.write(key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()))
+    if os.name != 'nt':
+        path.chmod(0o600)
+    return key
+
+
+def public_text(key):
+    return b64(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
+
+
+def derive(shared):
+    return HKDF(algorithm=SHA256(), length=32, salt=None, info=AAD).derive(shared)
+
+
+def encrypt(public, payload):
+    content = canonical(payload)
+    if len(content) > MAX_PACKET // 2:
+        raise ValueError('Sync event exceeds size limit')
+    ephemeral = X25519PrivateKey.generate()
+    peer = X25519PublicKey.from_public_bytes(base64.b64decode(public, validate=True))
+    nonce = os.urandom(12)
+    encrypted = AESGCM(derive(ephemeral.exchange(peer))).encrypt(nonce, content, AAD)
+    return canonical(dict(version=1, peer=public_text(ephemeral), nonce=b64(nonce), data=b64(encrypted)))
+
+
+def decrypt(key, packet):
+    if len(packet) > MAX_PACKET:
+        raise ValueError('Sync packet exceeds limit')
+    wrapper = json.loads(packet)
+    if wrapper['version'] != 1:
+        raise ValueError('Unsupported sync packet')
+    peer = X25519PublicKey.from_public_bytes(base64.b64decode(wrapper['peer'], validate=True))
+    content = AESGCM(derive(key.exchange(peer))).decrypt(
+        base64.b64decode(wrapper['nonce'], validate=True),
+        base64.b64decode(wrapper['data'], validate=True), AAD)
+    return json.loads(content)
+
+
+def receipt(key, subject, event_id, digest):
+    payload = dict(protocol='DVK_RECEIPT_V1', subject=subject, event_id=event_id, digest=digest)
+    return dict(payload=payload, signature=b64(key.sign(canonical(payload))))
+
+
+def verify_receipt(key, envelope, subject, event_id, digest):
+    payload = envelope['payload']
+    key.verify(base64.b64decode(envelope['signature'], validate=True), canonical(payload))
+    if payload != dict(protocol='DVK_RECEIPT_V1', subject=subject, event_id=event_id, digest=digest):
+        raise ValueError('Receipt belongs to another event')
+
+
+def event_digest(payload):
+    return hashlib.sha256(canonical(payload)).hexdigest()

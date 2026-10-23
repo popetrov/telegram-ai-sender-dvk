@@ -58,7 +58,7 @@ def main(argv=None):
         print("Runtime files: " + (", ".join(missing) if missing else "present"))
         return int(bool(missing) or sys.version_info < (3, 11))
     python = prepare_environment()
-    target = "main.py" if args.no_updates else "launcher.py"
+    target = "main.py"
     return command_status([str(python), str(ROOT / target)])
 
 

@@ -2,6 +2,9 @@
 *.session
 data/
 venv/
+.venv/
+venv-center/
+dist/
 __pycache__/
 *.pyc
 
@@ -12,6 +15,7 @@ database_before*.py
 main_before*.py
 # Central authority token (never distribute)
 .env.authority
+.env.before-center-*
 
 # Local/CI test reports
 test-results/

@@ -1,7 +1,17 @@
-import access_runtime
-import asyncio
-
+# Resolve relative database/session paths before importing clients.
+import os
 from pathlib import Path
+os.chdir(Path(__file__).resolve().parent)
+if __name__ == '__main__':
+    import atexit
+    from file_lock import FileLock
+    _process_lock = FileLock(Path('data/sender.lock'))
+    _process_lock.__enter__()
+    atexit.register(_process_lock.__exit__)
+
+import access_runtime
+import sync_runtime
+import asyncio
 
 from getpass import getpass
 
@@ -133,14 +143,22 @@ async def ensure_telegram_authorized():
 
 async def main():
     bot = create_bot()
+    from schedule_state import recover
+    saved = recover()
+    if saved:
+        bot.bot_data[QUEUE_KEY] = saved
+        print('Найдена прерванная очередь. Проверьте /queue; автоматическая отправка не возобновляется.')
     access_task = None
+    sync_task = None
 
     try:
         await ensure_telegram_authorized()
         await connect()
         access_task = await access_runtime.start(client)
+        sync_task = await sync_runtime.start(client)
 
-        print("=== TELEGRAM AI SENDER 2.0.19 ===")
+        version = Path('version.txt').read_text('utf-8-sig').strip()
+        print(f"=== TELEGRAM AI SENDER {version} (PILOT) ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")
@@ -162,12 +180,21 @@ async def main():
 
     finally:
         await access_runtime.stop(access_task)
+        await access_runtime.stop(sync_task)
         await disconnect()
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        import sys
+        if '--self-check' in sys.argv:
+            from database import init_database
+            from ai import get_catalog
+            init_database()
+            get_catalog()
+            print('Local database, imports and product catalog checked; no network calls.')
+        else:
+            asyncio.run(main())
     except KeyboardInterrupt:
         print("\nОстановка по команде пользователя.")
 

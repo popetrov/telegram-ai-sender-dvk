@@ -181,7 +181,11 @@ def user_is_allowed(update: Update) -> bool:
     if update.effective_user is None:
         return False
 
-    if update.effective_user.id not in load_allowed_users():
+    if access_runtime.account_id is not None:
+        if (update.effective_user.id != access_runtime.account_id
+                or update.effective_chat.type != 'private'):
+            return False
+    elif update.effective_user.id not in load_allowed_users():
         return False
     try:
         access_runtime.require_access()
@@ -736,6 +740,9 @@ async def cancel_command(
     context.user_data.pop("pending_file_name", None)
     context.user_data.pop("pending_duplicate_count", None)
 
+    from schedule_state import clear
+    clear()
+
     await update.effective_message.reply_text(
         "Очередь отменена. Сохранённые подготовленные сообщения "
         "остаются в SQLite. Для восстановления используйте /queue."
@@ -844,6 +851,18 @@ async def handle_excel(
         except (ValueError, OSError) as exc:
             await update.effective_message.reply_text("Ошибка бизнес-пакета: " + str(exc))
             return
+        # Save the uploaded client fields before classification, including duplicates.
+        # Ignore unrelated spreadsheet columns; never upload settings or credentials.
+        import json
+        from database import get_connection
+        with get_connection() as db:
+            business_columns = set(REQUIRED_COLUMNS)
+            for settings in catalog.products.values():
+                business_columns.update(settings['columns'].values())
+            columns = [name for name in df.columns if name in business_columns]
+            for record in df[columns].fillna('').to_dict(orient='records'):
+                db.execute('INSERT INTO uploaded_rows(data) VALUES (?)',
+                           (json.dumps(record, ensure_ascii=False),))
         accepted_rows, duplicate_rows = classify_excel_rows(df, catalog)
 
         valid_rows = []
@@ -1810,6 +1829,8 @@ async def queue_callback(
 
         context.application.bot_data.pop(QUEUE_KEY, None)
 
+        from schedule_state import clear
+        clear()
         await query.answer("Очередь отменена.")
         await query.edit_message_text(
             "Очередь отменена. Подготовленные сообщения сохранены "
@@ -1841,7 +1862,9 @@ async def queue_callback(
             )
             return
 
+        from schedule_state import save
         queue["state"] = "scheduled"
+        save(queue)
 
         task = asyncio.create_task(
             send_queue_at_time(
@@ -2001,6 +2024,11 @@ async def send_queue_at_time(
         queue["state"] = "interrupted"
 
     finally:
+        from schedule_state import save, clear
+        if application.bot_data.get(QUEUE_KEY) is queue:
+            save(queue)
+        else:
+            clear()
         task = application.bot_data.get(SCHEDULE_TASK_KEY)
 
         if task is asyncio.current_task():

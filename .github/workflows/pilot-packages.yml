@@ -1,0 +1,74 @@
+name: Verify and publish pilot packages
+
+on:
+  push:
+    branches: [feature/central-access-leases]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
+      - run: python tests/run_ci.py
+      - run: python start.py --check
+      - run: python center_setup.py check
+      - run: python build_platform_release.py --output dist
+      - name: Smoke-test unpacked center with only center dependencies
+        shell: bash
+        run: |
+          python -m zipfile -e dist/dvk-center-pilot.zip center-smoke
+          python -m venv center-env
+          if [ "$RUNNER_OS" = Windows ]; then
+            CENTER_PY=center-env/Scripts/python.exe
+          else
+            CENTER_PY=center-env/bin/python
+          fi
+          "$CENTER_PY" -m pip install -r center-smoke/requirements-authority.txt
+          "$CENTER_PY" center-smoke/center_setup.py check
+          cd center-smoke
+          "../$CENTER_PY" -c "import access_server; from sync_protocol import initialize_encryption_key; from authority_store import AuthorityStore; from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey; s=AuthorityStore('data/smoke.sqlite'); app=access_server.create_server('123:test',99,Ed25519PrivateKey.generate(),s,X25519PrivateKey.generate()); print('Center-only imports and handlers OK; no polling')"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pilot-checks-${{ matrix.os }}
+          path: test-results/unittest.txt
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: pilot-packages
+          path: dist/*
+
+  publish:
+    needs: verify
+    if: github.ref == 'refs/heads/feature/central-access-leases'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pilot-packages
+          path: dist
+      - name: Publish isolated prerelease without changing latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          TAG="pilot-center-${COMMIT_SHA:0:12}"
+          gh release create "$TAG" dist/* --repo "$REPOSITORY" --target "$COMMIT_SHA" --prerelease --latest=false --title "Center pilot ${COMMIT_SHA:0:12}" --notes-file PROJECT_AUDIT.md

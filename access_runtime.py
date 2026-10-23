@@ -12,7 +12,9 @@ from pathlib import Path
 from access_lease import AccessDenied, LeaseStore, POLL_SECONDS
 
 _store = None
+account_id = None
 _log = logging.getLogger(__name__)
+transport_lock = asyncio.Lock()
 
 
 def require_access():
@@ -47,13 +49,14 @@ async def refresh(client, authority, store):
 
 
 async def start(client):
-    global _store
+    global _store, account_id
     authority = os.getenv("ACCESS_BOT_USERNAME", "").strip().lstrip("@")
     public = os.getenv("ACCESS_PUBLIC_KEY", "").strip()
     manager = os.getenv("MANAGER_ID", "").strip()
     if not authority or not public or not manager:
         raise RuntimeError("Задайте ACCESS_BOT_USERNAME, ACCESS_PUBLIC_KEY и MANAGER_ID в .env.")
     me = await client.get_me()
+    account_id = me.id
     _store = LeaseStore(Path("data/access_lease.json"),
                         base64.b64decode(public, validate=True), f"{manager}:{me.id}")
 
@@ -61,7 +64,8 @@ async def start(client):
         while True:
             started = time.monotonic()
             try:
-                await refresh(client, authority, _store)
+                async with transport_lock:
+                    await refresh(client, authority, _store)
             except Exception as exc:
                 _log.warning("Central access check unavailable (%s); using cached permission",
                              type(exc).__name__)

@@ -25,13 +25,18 @@ def canonical(payload):
                       ensure_ascii=True).encode("ascii")
 
 
-def issue(private_key, *, subject, nonce, allowed, now=None):
+def issue(private_key, *, subject, nonce, allowed, now=None, subscription_end=None):
     """Run on the authority only, after looking up the current permission."""
     now = int(time.time() if now is None else now)
     if type(allowed) is not bool or not subject or not nonce:
         raise ValueError("Invalid access response")
+    end = now + OFFLINE_SECONDS
+    if allowed and subscription_end is not None:
+        end = min(end, int(subscription_end))
+        if end <= now:
+            allowed, end = False, now + OFFLINE_SECONDS
     payload = dict(version=1, subject=subject, nonce=nonce, allowed=allowed,
-                   issued_at=now, expires_at=now + OFFLINE_SECONDS)
+                   issued_at=now, expires_at=end)
     return dict(payload=payload, signature=base64.b64encode(
         private_key.sign(canonical(payload))).decode("ascii"))
 
@@ -52,7 +57,7 @@ class LeaseStore:
                     or type(payload["allowed"]) is not bool
                     or type(payload["issued_at"]) is not int
                     or type(payload["expires_at"]) is not int
-                    or payload["expires_at"] - payload["issued_at"] != OFFLINE_SECONDS
+                    or not 0 < payload["expires_at"] - payload["issued_at"] <= OFFLINE_SECONDS
                     or not isinstance(payload["nonce"], str)
                     or not payload["nonce"]):
                 raise ValueError("Invalid payload")

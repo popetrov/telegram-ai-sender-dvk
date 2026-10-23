@@ -152,7 +152,12 @@ class BusinessPackageTests(unittest.TestCase):
     def test_symlink_prompt_escape_rejected(self):
         outside = self.root / "outside.md"
         outside.write_text("outside", encoding="utf-8")
-        (self.root / "prompts/escape.md").symlink_to(outside)
+        try:
+            (self.root / "prompts/escape.md").symlink_to(outside)
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) == 1314:
+                self.skipTest('Windows account cannot create symlinks; exercised on Linux/macOS CI')
+            raise
         self.products["Service"]["prompt"] = "escape.md"
         self.write()
         with self.assertRaises(ValueError):

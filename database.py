@@ -222,6 +222,8 @@ def init_database() -> None:
             ON clients(manager_id)
             """
         )
+        from sync_data import initialize
+        initialize(connection)
 
 
 def normalize_username(username: str | None) -> str:
