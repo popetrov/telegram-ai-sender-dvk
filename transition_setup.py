@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+from contextlib import nullcontext
 
 from file_lock import FileLock
 import manual_update
@@ -16,7 +17,8 @@ ROOT = Path(__file__).resolve().parent
 CORE = ('ai.py','arbitration_api.py','bot.py','config.py','database.py','launcher.py',
         'main.py','telegram_client.py','updater.py','requirements.txt')
 BUNDLE_FILES = {'transition_setup.py','manual_update.py','file_lock.py','transition.bat',
-                'transition_mac.sh','TRANSITION.md','center-public.json','legacy-baselines.json','manager-package.zip'}
+                'transition_mac.sh','TRANSITION.md','center-public.json','legacy-baselines.json','manager-package.zip',
+                'startup_update.py','start.py'}
 
 
 def digest(data):
@@ -78,12 +80,12 @@ def inspect_source(source, baselines):
     return version, baseline
 
 
-def prepare_transition(source, destination, bundle=ROOT):
+def prepare_transition(source, destination, bundle=ROOT, *, source_locked=False):
     source,destination = Path(source).resolve(),Path(destination).resolve()
     manifest,public,baselines = verify_bundle(bundle)
     if not (source/'.env').is_file() or (source/'.env').is_symlink():
         raise ValueError('В старой установке отсутствует локальный .env')
-    with FileLock(source/'data/sender.lock'):
+    with (nullcontext() if source_locked else FileLock(source/'data/sender.lock')):
         version,baseline = inspect_source(source,baselines)
         report = manual_update.prepare(source,Path(bundle)/'manager-package.zip',
                                        manifest['files']['manager-package.zip'],destination,
@@ -93,6 +95,10 @@ def prepare_transition(source, destination, bundle=ROOT):
                   source_unchanged=True,activated=False,dependencies_checked=False,
                   local_startup_checked=False,network_startup_checked=False,ready_for_pilot=False)
     (destination/'transition-report.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+    _, payload = manual_update.verify_package(Path(bundle)/'manager-package.zip',manifest['files']['manager-package.zip'])
+    (destination/'data').mkdir(exist_ok=True)
+    (destination/'data/installed-baseline.json').write_text(json.dumps(
+        {name:content.decode('utf-8-sig') for name,content in payload.items()},ensure_ascii=False),encoding='utf-8')
     return result
 
 

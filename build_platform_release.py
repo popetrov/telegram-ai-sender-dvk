@@ -80,6 +80,9 @@ def main():
     build_center(ROOT, args.output / 'dvk-center-pilot.zip')
     build_package(ROOT, args.output / 'dvk-manager-pilot.zip')
     build_transition(ROOT,args.output/'dvk-transition-pilot.zip',args.output/'dvk-manager-pilot.zip')
+    from build_startup_bridge import build
+    version = (ROOT/'version.txt').read_text('utf-8-sig').strip()
+    build(ROOT,args.output/'dvk-transition-pilot.zip',args.output/f'telegram_ai_sender_v{version}.zip')
     print('Built center, manager and one-time transition pilot packages; no latest release changed.')
 
 

@@ -39,6 +39,10 @@ jobs:
           if errorlevel 1 exit /b 1
           python transition-smoke/transition_setup.py --source legacy-smoke --destination candidate-smoke --sender-stopped
           if errorlevel 1 exit /b 1
+          python tests/transition_fixture.py --bundle transition-smoke --destination bridge-legacy-smoke
+          if errorlevel 1 exit /b 1
+          python tests/bridge_smoke.py --source bridge-legacy-smoke --packages dist
+          if errorlevel 1 exit /b 1
       - name: Smoke-test unpacked center with only center dependencies
         shell: bash
         run: |

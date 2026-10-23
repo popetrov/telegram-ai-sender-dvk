@@ -1,0 +1,245 @@
+"""Update before startup; retain the previous installation until local checks pass.
+
+The original shortcut remains the entry point. An atomic pointer selects the
+active sibling installation. Never roll back data after starting the sender.
+"""
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.request
+import uuid
+import zipfile
+
+from file_lock import FileLock
+
+REPOSITORY = 'popetrov/telegram-ai-sender-dvk'
+API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
+MAX_BYTES = 64 * 1024 * 1024
+LEGACY_FILES = {'ai.py', 'arbitration_api.py', 'bot.py', 'database.py', 'launcher.py',
+                'main.py', 'products.json', 'updater.py', 'version.txt',
+                'prompts/bg.md', 'prompts/credit.md', 'prompts/pravo_ip.md',
+                'prompts/pravo_ooo.md', 'prompts/zakupki_konsalt.md'}
+
+
+def version(value):
+    if not isinstance(value, str) or not re.fullmatch(r'v?\d+\.\d+\.\d+', value):
+        raise ValueError('Invalid release version')
+    return tuple(map(int, value.lstrip('v').split('.')))
+
+
+def fetch(url):
+    # Only official repository release assets/API. TLS validation stays enabled.
+    prefixes = (API, f'https://github.com/{REPOSITORY}/releases/download/')
+    if not any(url.startswith(prefix) for prefix in prefixes):
+        raise ValueError('Unexpected update URL')
+    request = urllib.request.Request(url, headers={'User-Agent': 'DVK-Startup'})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        data = response.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise ValueError('Update exceeds size limit')
+    return data
+
+
+def latest_bundle(current):
+    release = json.loads(fetch(API))
+    if release.get('draft') or release.get('prerelease'):
+        return None
+    tag = release['tag_name']
+    if version(tag) <= version(current):
+        return None
+    names = ('dvk-transition-pilot.zip', 'dvk-transition-pilot.zip.sha256')
+    assets = {}
+    for name in names:
+        matches = [a for a in release.get('assets', []) if a.get('name') == name]
+        if len(matches) != 1:
+            return None  # A legacy-only release is not a full platform update.
+        url = matches[0]['browser_download_url']
+        expected = f'https://github.com/{REPOSITORY}/releases/download/{tag}/{name}'
+        if url != expected:
+            raise ValueError('Unexpected release asset URL')
+        assets[name] = url
+    raw = fetch(assets[names[0]])
+    checksum = fetch(assets[names[1]]).decode('ascii').strip()
+    match = re.fullmatch(r'([a-fA-F0-9]{64})(?:\s+\*?\S+)?', checksum)
+    if not match or hashlib.sha256(raw).hexdigest() != match[1].lower():
+        raise ValueError('Update checksum mismatch')
+    return tag, raw
+
+
+def unpack_bundle(raw, destination):
+    from transition_setup import BUNDLE_FILES, verify_bundle
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        entries = archive.infolist()
+        names = [i.filename for i in entries]
+        if (len(names) != len(set(n.casefold() for n in names))
+                or set(names) != BUNDLE_FILES | {'transition-manifest.json'}
+                or sum(i.file_size for i in entries) > MAX_BYTES):
+            raise ValueError('Invalid transition archive')
+        for info in entries:
+            if info.is_dir() or stat.S_ISLNK(info.external_attr >> 16):
+                raise ValueError('Unsafe transition archive')
+        for name in names:
+            (destination / name).write_bytes(archive.read(name))
+    verify_bundle(destination)
+
+
+def active_installation(root):
+    root = Path(root).resolve()
+    pointer = root / 'data/active-installation.json'
+    if not pointer.exists():
+        return root
+    record = json.loads(pointer.read_text('utf-8'))
+    name = record.get('directory', '')
+    if (record.get('format') != 1 or not isinstance(name, str)
+            or not re.fullmatch(re.escape(root.name) + r'_dvk_[0-9a-f]{32}', name)):
+        raise ValueError('Повреждена запись активной версии. Нужна проверка владельца.')
+    active = root.parent / name
+    if active.is_symlink() or not active.is_dir() or active.resolve().parent != root.parent:
+        raise ValueError('Активная версия недоступна. Нужна проверка владельца.')
+    return active
+
+
+def activate(root, candidate):
+    root, candidate = Path(root).resolve(), Path(candidate).resolve()
+    if candidate.parent != root.parent:
+        raise ValueError('Active installation must be a sibling')
+    path = root / 'data/active-installation.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(dict(format=1, directory=candidate.name)), encoding='utf-8')
+    os.replace(temporary, path)
+
+
+def prepare_update(source, candidate, bundle, tag):
+    import manual_update
+    from transition_setup import prepare_transition, finish_transition, verify_bundle
+    manifest, _, _ = verify_bundle(bundle)
+    package = bundle / 'manager-package.zip'
+    metadata, payload = manual_update.verify_package(package, manifest['files']['manager-package.zip'])
+    if version(metadata['version']) != version(tag):
+        raise ValueError('Release and package versions differ')
+    baseline_path = source / 'data/installed-baseline.json'
+    if baseline_path.is_file():
+        baseline = json.loads(baseline_path.read_text('utf-8'))
+        def provider(root, name):
+            text = baseline.get(name)
+            return text.encode('utf-8') if text is not None else manual_update.MISSING
+        # Reject core modifications rather than silently carrying obsolete code.
+        for name in manual_update.RUNTIME - {'products.json', '.env.example'}:
+            if name.startswith('prompts/') or name not in baseline:
+                continue
+            path = source / name
+            if not path.is_file() or not manual_update.same_text(path.read_bytes(), baseline[name].encode('utf-8')):
+                raise ValueError('Locally modified runtime: ' + name)
+        report = manual_update.prepare(source, package, manifest['files']['manager-package.zip'], candidate,
+                                       baseline_provider=provider)
+        (candidate / 'transition-report.json').write_text(json.dumps(dict(
+            conflicts=report['conflicts'], activated=False)), encoding='utf-8')
+    else:
+        prepare_transition(source, candidate, bundle, source_locked=True)
+    finish_transition(candidate, bundle)
+    # Store the distributed baseline, not merged customer customizations.
+    (candidate / 'data/installed-baseline.json').write_text(json.dumps(
+        {name: content.decode('utf-8-sig') for name, content in payload.items()},
+        ensure_ascii=False), encoding='utf-8')
+
+
+def recover_legacy(root, bundle):
+    """Recover pre-bridge files from the backup made by the old updater.
+
+    Never use the bridge's placeholder product catalog or the backup database:
+    snapshot current local data, then restore only the backed-up code/products.
+    """
+    import manual_update
+    from transition_setup import CORE, inspect_source, verify_bundle
+    _, _, baselines = verify_bundle(bundle)
+    backups = sorted((root / 'data/backups').glob('*/manifest.json'), reverse=True)
+    if not backups:
+        raise ValueError('Не найдена резервная копия старого обновления')
+    backup = backups[0].parent
+    record = json.loads(backups[0].read_text('utf-8'))
+    if set(record.get('existing_files', [])) != LEGACY_FILES:
+        raise ValueError('Неполная резервная копия старой версии')
+    source = root.with_name(root.name + '_dvk_' + uuid.uuid4().hex)
+    source.mkdir()
+    for name in set(CORE) | {'version.txt', 'products.json'}:
+        origin = backup / name if name in LEGACY_FILES else root / name
+        if origin.is_symlink() or not origin.is_file():
+            raise ValueError('Неполная старая установка')
+        shutil.copy2(origin, source / name)
+    prompts = root / 'prompts'
+    if prompts.exists():
+        if prompts.is_symlink() or any(p.is_symlink() for p in prompts.rglob('*')):
+            raise ValueError('Unsafe local prompts')
+        shutil.copytree(prompts, source / 'prompts')
+    for name in LEGACY_FILES:
+        if name.startswith('prompts/'):
+            if (backup / name).is_symlink() or not (backup / name).is_file():
+                raise ValueError('Unsafe backup prompt')
+            target = source / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup / name, target)
+    inspect_source(source, baselines)
+    manual_update.snapshot_local(root, source)
+    activate(root, source)  # Durable fallback before installing anything new.
+    return source
+
+
+def run(root, *, updates=True, discover=latest_bundle, prepare=prepare_update, launch=None,
+        initial_bundle=None):
+    root = Path(root).resolve()
+    from start import prepare_environment
+    if launch is None:
+        def launch(active):
+            if active != root and not (active / 'data/installed-baseline.json').exists():
+                # The restored legacy sender uses the interpreter that already
+                # ran its old launcher. Falling back must not need the internet.
+                python = Path(sys.executable)
+            else:
+                python = prepare_environment(active)
+            return subprocess.run([str(python), str(active / 'main.py')], cwd=active).returncode
+    # Held for the complete sender lifetime, including staging and launch.
+    with FileLock(root / 'data/startup.lock'):
+        active = active_installation(root)  # Corrupt pointer must never start a stale database.
+        if initial_bundle is not None and active == root:
+            with tempfile.TemporaryDirectory(prefix='dvk-bridge-') as temporary:
+                bundle = Path(temporary)
+                unpack_bundle(initial_bundle, bundle)
+                active = recover_legacy(root, bundle)
+        if initial_bundle is not None:
+            # Embedded bytes were delivered and verified by the old updater.
+            # Do not need a second download to complete the first transition.
+            def discover(current):
+                with zipfile.ZipFile(io.BytesIO(initial_bundle)) as archive:
+                    with zipfile.ZipFile(io.BytesIO(archive.read('manager-package.zip'))) as manager:
+                        tag = json.loads(manager.read('manifest.json'))['version']
+                return (tag, initial_bundle) if version(tag) > version(current) else latest_bundle(current)
+        if updates:
+            try:
+                print('Проверяю обновления…', flush=True)
+                release = discover((active / 'version.txt').read_text('utf-8-sig').strip())
+                if release:
+                    tag, raw = release
+                    with FileLock(active / 'data/sender.lock'):
+                        candidate = root.with_name(root.name + '_dvk_' + uuid.uuid4().hex)
+                        with tempfile.TemporaryDirectory(prefix='dvk-update-') as temporary:
+                            bundle = Path(temporary)
+                            unpack_bundle(raw, bundle)
+                            print('Устанавливаю обновление. Сохраняю прежнюю версию и данные…', flush=True)
+                            prepare(active, candidate, bundle, tag)
+                        activate(root, candidate)
+                        active = candidate
+                    print('Обновление готово. Запускаю программу.', flush=True)
+            except Exception as exc:
+                # Log only type: subprocess/HTTP errors can include local settings.
+                print('Обновление отложено. Запускаю прежнюю версию. Причина: ' + type(exc).__name__, flush=True)
+        # No rollback after launch: the new sender may already have sent messages.
+        return launch(active)

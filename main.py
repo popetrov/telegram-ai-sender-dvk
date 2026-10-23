@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 if __name__ == '__main__':
+    if Path('data/active-installation.json').exists():
+        raise SystemExit('Эта папка уже обновлена. Запустите программу привычным start.bat (на Mac — start_mac.sh).')
     import atexit
     from file_lock import FileLock
     _process_lock = FileLock(Path('data/sender.lock'))

@@ -57,14 +57,13 @@ def main(argv=None):
         print("Virtual environment: " + ("present" if environment_python().is_file() else "not created"))
         print("Runtime files: " + (", ".join(missing) if missing else "present"))
         return int(bool(missing) or sys.version_info < (3, 11))
-    python = prepare_environment()
-    target = "main.py"
-    return command_status([str(python), str(ROOT / target)])
+    from startup_update import run
+    return run(ROOT, updates=not args.no_updates)
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
         print("Startup failed: " + str(exc), file=sys.stderr)
         raise SystemExit(1)

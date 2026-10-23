@@ -26,7 +26,7 @@ RUNTIME = {
     "BUSINESS_PACKAGES.md", "CENTRAL_ACCESS.md",
     "sync_data.py", "sync_protocol.py", "sync_runtime.py", "file_lock.py",
     "manager_setup.py", "DATA_POLICY.md", "schedule_state.py", "platform_updater.py",
-    "PILOT.md", "PROJECT_AUDIT.md",
+    "PILOT.md", "PROJECT_AUDIT.md", "startup_update.py", "transition_setup.py", "STARTUP_UPDATES.md",
 }
 MAX_BYTES = 64 * 1024 * 1024
 MISSING = object()
@@ -198,6 +198,8 @@ def snapshot_local(source, candidate):
             if Path(directory) == data:
                 dirs[:] = [n for n in dirs if n not in {"backups", "updates", "access_authority"}]
             for name in files:
+                if name in {'active-installation.json', 'active-installation.tmp'}:
+                    continue
                 if name.endswith(("-wal", "-shm", "-journal", ".lock")):
                     continue
                 paths.append(Path(directory)/name)
