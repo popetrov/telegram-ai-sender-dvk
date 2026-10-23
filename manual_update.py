@@ -205,7 +205,7 @@ def snapshot_local(source, candidate):
         snapshot_file(path, candidate/path.relative_to(source))
 
 
-def prepare(source, package, expected_hash, destination):
+def prepare(source, package, expected_hash, destination, baseline_provider=None):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if not source.is_dir() or destination.exists():
         raise ValueError("Source must exist and destination must be new")
@@ -236,7 +236,7 @@ def prepare(source, package, expected_hash, destination):
             content = incoming
             if local_path.is_file():
                 local = local_path.read_bytes()
-                base = git_baseline(source, name)
+                base = baseline_provider(source, name) if baseline_provider else git_baseline(source, name)
                 if name == "products.json":
                     original = registry_products(json.loads(base)) if base is not MISSING else MISSING
                     new_registry = json.loads(incoming)

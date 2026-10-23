@@ -17,6 +17,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -27,6 +29,16 @@ jobs:
       - run: python start.py --check
       - run: python center_setup.py check
       - run: python build_platform_release.py --output dist
+      - name: Install transition from actual legacy source with synthetic data (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          python -m zipfile -e dist/dvk-transition-pilot.zip transition-smoke
+          if errorlevel 1 exit /b 1
+          python tests/transition_fixture.py --bundle transition-smoke --destination legacy-smoke
+          if errorlevel 1 exit /b 1
+          python transition-smoke/transition_setup.py --source legacy-smoke --destination candidate-smoke --sender-stopped
+          if errorlevel 1 exit /b 1
       - name: Smoke-test unpacked center with only center dependencies
         shell: bash
         run: |
