@@ -12,3 +12,6 @@ database_before*.py
 main_before*.py
 # Central authority token (never distribute)
 .env.authority
+
+# Local/CI test reports
+test-results/

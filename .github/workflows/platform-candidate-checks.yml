@@ -31,7 +31,13 @@ jobs:
       - name: Check dependency consistency
         run: python -m pip check
       - name: Run tests without real Telegram or AI requests
-        run: python -m unittest discover -s tests -v
+        run: python tests/run_ci.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os }}
+          path: test-results/unittest.txt
+          if-no-files-found: warn
       - name: Inspect shared entry point without starting sender
         run: python start.py --check
       - name: Inspect Windows wrapper
