@@ -5,6 +5,7 @@ from getpass import getpass
 import os
 from pathlib import Path
 import subprocess
+import sys
 import venv
 
 ROOT = Path(__file__).resolve().parent
@@ -90,6 +91,10 @@ def main():
 
 
 if __name__ == '__main__':
+    # Windows redirected output can default to cp1252 even for Russian users.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     try:
         raise SystemExit(main())
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:

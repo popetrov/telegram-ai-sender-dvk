@@ -115,6 +115,34 @@ class CenterTests(unittest.TestCase):
         with self.store.connection() as db:
             self.assertEqual(db.execute('SELECT company_id FROM events').fetchone()[0], 'dvk')
 
+    def test_large_analysis_fragments_survive_retry_and_reassemble_once(self):
+        self.store.assign(42, 'dvk')
+        data = dict(installation='install', data={'table':'research_runs','row':{'raw_result':'analysis '*150000}})
+        parts = protocol.event_parts('a'*32, data)
+        self.assertGreater(len(parts), 1)
+        for wire_id, wire_data in reversed(parts):
+            for _ in range(2):
+                self.store.receive(42, 'manager:42', wire_id, protocol.event_digest(wire_data), wire_data)
+        # Retry all chunks after completion, e.g. last receipt was lost.
+        for wire_id, wire_data in parts:
+            self.store.receive(42, 'manager:42', wire_id, protocol.event_digest(wire_data), wire_data)
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 1)
+            stored = db.execute('SELECT * FROM events').fetchone()
+            self.assertEqual(stored['event_id'], 'a'*32)
+            self.assertEqual(json.loads(stored['payload']), data)
+            self.assertEqual(db.execute('SELECT count(*) FROM fragments').fetchone()[0], 0)
+
+    def test_fragment_conflicts_do_not_overwrite_saved_parts(self):
+        self.store.assign(42, 'dvk')
+        data = dict(installation='install', data={'table':'research_runs','row':{'raw_result':'a'*1200000}})
+        wire_id, wire_data = protocol.event_parts('a'*32, data)[0]
+        self.store.receive(42, 'manager:42', wire_id, protocol.event_digest(wire_data), wire_data)
+        altered = json.loads(json.dumps(wire_data))
+        altered['data']['row']['chunk'] = protocol.b64(b'other-content')
+        with self.assertRaises(ValueError):
+            self.store.receive(42, 'manager:42', wire_id, protocol.event_digest(altered), altered)
+
     def test_encrypted_upload_cannot_be_read_or_modified(self):
         key = X25519PrivateKey.generate()
         payload = {'confidential': 'client-company-data'}

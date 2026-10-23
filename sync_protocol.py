@@ -14,6 +14,8 @@ from access_lease import canonical
 
 MAX_PACKET = 2 * 1024 * 1024
 AAD = b'DVK_SYNC_V1'
+CHUNK_BYTES = 256 * 1024
+MAX_EVENT = 64 * 1024 * 1024
 
 
 def b64(data):
@@ -79,3 +81,21 @@ def verify_receipt(key, envelope, subject, event_id, digest):
 
 def event_digest(payload):
     return hashlib.sha256(canonical(payload)).hexdigest()
+
+
+def event_parts(event_id, data):
+    """Stable wire IDs allow retries even if the last multipart receipt was lost."""
+    raw = canonical(data)
+    if len(raw) <= MAX_PACKET // 2:
+        return [(event_id, data)]
+    if len(raw) > MAX_EVENT:
+        raise ValueError('Business event exceeds 64 MiB; retained locally')
+    digest = hashlib.sha256(raw).hexdigest()
+    count = (len(raw) + CHUNK_BYTES - 1) // CHUNK_BYTES
+    result = []
+    for index in range(count):
+        wire_id = hashlib.sha256(f'{event_id}:{digest}:{index}'.encode()).hexdigest()[:32]
+        row = dict(parent=event_id, digest=digest, index=index, count=count,
+                   chunk=b64(raw[index*CHUNK_BYTES:(index+1)*CHUNK_BYTES]))
+        result.append((wire_id, dict(installation=data['installation'], data=dict(table='sync_fragment', row=row))))
+    return result

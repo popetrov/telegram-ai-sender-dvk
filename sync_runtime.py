@@ -7,7 +7,7 @@ import os
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import base64
 from access_runtime import transport_lock
-from sync_protocol import (MAX_PACKET, decrypt, encrypt, receipt, event_digest, verify_receipt)
+from sync_protocol import (MAX_PACKET, decrypt, encrypt, receipt, event_digest, verify_receipt, event_parts)
 from sync_data import next_event, TABLES
 
 log = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def register_receiver(application, store, signing_key, encryption_key):
             if (not isinstance(subject, str) or not isinstance(event_id, str) or len(event_id) != 32
                     or any(c not in '0123456789abcdef' for c in event_id)
                     or not isinstance(data, dict) or not isinstance(data.get('installation'), str)
-                    or data.get('data', {}).get('table') not in TABLES):
+                    or data.get('data', {}).get('table') not in (*TABLES, 'sync_fragment')):
                 raise ValueError('Invalid sync data')
             digest = event_digest(data)
             store.receive(update.effective_user.id, subject, event_id, digest, data)
@@ -63,23 +63,25 @@ async def start(client):
                     await asyncio.sleep(5)
                     continue
                 event_id, data = event
-                packet = encrypt(encryption, dict(subject=subject, event_id=event_id, data=data))
-                stream = io.BytesIO(packet)
-                stream.name = 'encrypted.dvk'
-                async with transport_lock:
-                    async with client.conversation(authority, timeout=60, exclusive=True) as conversation:
-                        sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True)
-                        async with asyncio.timeout(60):
-                            while True:
-                                response = await conversation.get_response(sent)
-                                if not (response.raw_text or '').startswith('DVK_RECEIPT '):
-                                    continue
-                                try:
-                                    envelope = json.loads(response.raw_text[len('DVK_RECEIPT '):])
-                                    verify_receipt(key, envelope, subject, event_id, event_digest(data))
-                                    break
-                                except Exception:
-                                    continue
+                for wire_id, wire_data in event_parts(event_id, data):
+                    packet = encrypt(encryption, dict(subject=subject, event_id=wire_id, data=wire_data))
+                    stream = io.BytesIO(packet)
+                    stream.name = 'encrypted.dvk'
+                    async with transport_lock:
+                        async with client.conversation(authority, timeout=60, exclusive=True) as conversation:
+                            sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True)
+                            async with asyncio.timeout(60):
+                                while True:
+                                    response = await conversation.get_response(sent)
+                                    if not (response.raw_text or '').startswith('DVK_RECEIPT '):
+                                        continue
+                                    try:
+                                        envelope = json.loads(response.raw_text[len('DVK_RECEIPT '):])
+                                        verify_receipt(key, envelope, subject, wire_id, event_digest(wire_data))
+                                        break
+                                    except Exception:
+                                        continue
+                    await asyncio.sleep(2)
                 with get_connection() as db:
                     db.execute('DELETE FROM sync_outbox WHERE event_id=?', (event_id,))
                 await asyncio.sleep(2)

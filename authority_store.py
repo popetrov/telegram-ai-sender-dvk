@@ -1,5 +1,7 @@
 """Owner-only company subscriptions, bound Telegram identities and durable receipts."""
 import calendar
+import base64
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
@@ -35,6 +37,10 @@ class AuthorityStore:
                     digest TEXT NOT NULL, payload TEXT NOT NULL, received_at INTEGER NOT NULL,
                     company_id TEXT NOT NULL, subject TEXT NOT NULL,
                     PRIMARY KEY(account_id, event_id));
+                CREATE TABLE IF NOT EXISTS fragments (
+                    account_id INTEGER NOT NULL, parent TEXT NOT NULL, part INTEGER NOT NULL,
+                    count INTEGER NOT NULL, digest TEXT NOT NULL, chunk BLOB NOT NULL,
+                    PRIMARY KEY(account_id,parent,part));
             ''')
 
     @contextmanager
@@ -106,6 +112,48 @@ class AuthorityStore:
             manager = db.execute('SELECT * FROM managers WHERE account_id=?', (account_id,)).fetchone()
             if not manager or manager['subject'] != subject or not manager['company_id']:
                 raise ValueError('Unbound identity')
+            if payload.get('data', {}).get('table') == 'sync_fragment':
+                row = payload['data']['row']
+                parent, original_digest = row['parent'], row['digest']
+                index, count = row['index'], row['count']
+                if (not isinstance(parent, str) or len(parent) != 32
+                        or any(c not in '0123456789abcdef' for c in parent)
+                        or not isinstance(original_digest, str) or len(original_digest) != 64
+                        or type(index) is not int or type(count) is not int or not 0 <= index < count <= 256):
+                    raise ValueError('Invalid fragments')
+                expected_id = hashlib.sha256(f'{parent}:{original_digest}:{index}'.encode()).hexdigest()[:32]
+                if expected_id != event_id:
+                    raise ValueError('Fragment identity mismatch')
+                completed = db.execute('SELECT digest FROM events WHERE account_id=? AND event_id=?',
+                                       (account_id, parent)).fetchone()
+                if completed:
+                    if completed['digest'] != original_digest:
+                        raise ValueError('Conflicting completed event')
+                    return
+                chunk = base64.b64decode(row['chunk'], validate=True)
+                if not chunk or len(chunk) > 256 * 1024:
+                    raise ValueError('Invalid chunk size')
+                old = db.execute('SELECT * FROM fragments WHERE account_id=? AND parent=?', (account_id,parent)).fetchall()
+                for part in old:
+                    if part['count'] != count or part['digest'] != original_digest:
+                        raise ValueError('Fragment metadata conflict')
+                    if part['part'] == index and part['chunk'] != chunk:
+                        raise ValueError('Fragment content conflict')
+                db.execute('INSERT OR IGNORE INTO fragments VALUES (?,?,?,?,?,?)',
+                           (account_id,parent,index,count,original_digest,chunk))
+                parts = db.execute('SELECT * FROM fragments WHERE account_id=? AND parent=? ORDER BY part',
+                                   (account_id,parent)).fetchall()
+                if len(parts) < count:
+                    return
+                raw = b''.join(part['chunk'] for part in parts)
+                if hashlib.sha256(raw).hexdigest() != original_digest:
+                    raise ValueError('Assembled digest mismatch')
+                payload = json.loads(raw)
+                from sync_data import TABLES
+                if payload.get('data', {}).get('table') not in TABLES:
+                    raise ValueError('Invalid assembled event')
+                event_id, digest = parent, original_digest
+                db.execute('DELETE FROM fragments WHERE account_id=? AND parent=?', (account_id,parent))
             old = db.execute('SELECT digest FROM events WHERE account_id=? AND event_id=?',
                              (account_id, event_id)).fetchone()
             if old and old['digest'] != digest:

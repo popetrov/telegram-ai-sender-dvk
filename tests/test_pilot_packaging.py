@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -40,6 +41,12 @@ class PilotPackagingTests(unittest.TestCase):
         result = subprocess.run([sys.executable, 'center_setup.py', 'check'], cwd=self.root / 'center',
                                 capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+
+    def test_center_check_handles_western_windows_output_encoding(self):
+        result = subprocess.run([sys.executable, 'center_setup.py', 'check'], cwd=ROOT,
+                                capture_output=True, env={**os.environ, 'PYTHONIOENCODING':'cp1252'})
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertIn('Файлы центра'.encode('utf-8'), result.stdout)
 
     def test_manager_package_verifies_and_never_contains_authority_secrets(self):
         output = self.root / 'manager.zip'

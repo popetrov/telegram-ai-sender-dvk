@@ -106,7 +106,8 @@ def create_server(token, admin_id, key, store=None, sync_key=None):
                 await context.bot.send_message(admin_id,
                     f"Новая установка: Telegram ID {account_id}\n"
                     f"Идентификатор: {subject}\n"
-                    f"Разрешить: /approve {account_id}\nОтключить: /revoke {account_id}")
+                    f"Разрешить: /approve {account_id}" + (" КОМПАНИЯ" if store is not None else "")
+                    + f"\nОтключить: /revoke {account_id}")
         except (ValueError, KeyError, TypeError):
             await update.effective_message.reply_text("Некорректная заявка доступа.")
 
