@@ -101,7 +101,7 @@ def create_server(token, admin_id, key, store=None, sync_key=None):
             envelope = issue(key, subject=subject, nonce=nonce, allowed=allowed,
                              subscription_end=subscription_end)
             await update.effective_message.reply_text(
-                "DVK_ACCESS " + json.dumps(envelope, separators=(",", ":")))
+                "DVK_ACCESS " + json.dumps(envelope, separators=(",", ":")), disable_notification=True)
             if new_request:
                 await context.bot.send_message(admin_id,
                     f"Новая установка: Telegram ID {account_id}\n"

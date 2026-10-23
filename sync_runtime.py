@@ -6,7 +6,7 @@ import logging
 import os
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import base64
-from access_runtime import transport_lock
+from access_runtime import transport_lock, cleanup_service_messages
 from sync_protocol import (MAX_PACKET, decrypt, encrypt, receipt, event_digest, verify_receipt, event_parts)
 from sync_data import next_event, TABLES
 
@@ -35,7 +35,7 @@ def register_receiver(application, store, signing_key, encryption_key):
             digest = event_digest(data)
             store.receive(update.effective_user.id, subject, event_id, digest, data)
             await update.effective_message.reply_text('DVK_RECEIPT ' + json.dumps(
-                receipt(signing_key, subject, event_id, digest), separators=(',', ':')))
+                receipt(signing_key, subject, event_id, digest), separators=(',', ':')), disable_notification=True)
         except Exception as exc:
             # Never put client records, tokens or decrypted data into logs.
             log.warning('Upload rejected or interrupted (%s)', type(exc).__name__)
@@ -69,7 +69,7 @@ async def start(client):
                     stream.name = 'encrypted.dvk'
                     async with transport_lock:
                         async with client.conversation(authority, timeout=60, exclusive=True) as conversation:
-                            sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True)
+                            sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True, silent=True)
                             async with asyncio.timeout(60):
                                 while True:
                                     response = await conversation.get_response(sent)
@@ -81,6 +81,7 @@ async def start(client):
                                         break
                                     except Exception:
                                         continue
+                            await cleanup_service_messages(client, authority, sent, response)
                     await asyncio.sleep(2)
                 with get_connection() as db:
                     db.execute('DELETE FROM sync_outbox WHERE event_id=?', (event_id,))
