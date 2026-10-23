@@ -1,0 +1,85 @@
+name: Build macOS customer test archive
+
+on:
+  push:
+    branches:
+      - macos-support-2.0.19
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Check out customer branch
+        uses: actions/checkout@v4
+        with:
+          ref: macos-support-2.0.19
+
+      - name: Stage runtime files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging/Telegram_AI_Sender_macOS_2.0.19
+          git archive HEAD | tar -x -C staging/Telegram_AI_Sender_macOS_2.0.19
+
+          cd staging/Telegram_AI_Sender_macOS_2.0.19
+          rm -rf .git .github tests venv data
+          rm -f install.bat build_release.ps1 .env
+          find . -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find . -type f \( -name '*.pyc' -o -name '*.session' -o -name '*.sqlite' -o -name '*.db' \) -delete
+          find . -type f -name '.env' -delete
+
+          test -f .env.example
+          test -f start_mac.sh
+          test -f launcher.py
+          test -f main.py
+          test -f requirements.txt
+          test -f MACOS_SETUP.md
+          test -f version.txt
+          test -d prompts
+
+      - name: Validate archive contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path("staging/Telegram_AI_Sender_macOS_2.0.19")
+          forbidden_names = {".env", ".git", ".github", "data", "venv", "tests", "__pycache__"}
+          problems = []
+          for path in root.rglob("*"):
+              rel = path.relative_to(root)
+              if any(part in forbidden_names for part in rel.parts):
+                  problems.append(str(rel))
+              if path.is_file() and (path.name.endswith(".session") or path.suffix in {".sqlite", ".db", ".pyc"}):
+                  problems.append(str(rel))
+          if problems:
+              print("Forbidden content found:", *problems, sep="\n- ")
+              sys.exit(1)
+          print("Archive staging passed: no environment file, sessions, databases, caches, or development folders.")
+          PY
+
+      - name: Create ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd staging
+          zip -qr ../telegram-ai-sender-macos-2.0.19-customer-test.zip Telegram_AI_Sender_macOS_2.0.19
+          unzip -l ../telegram-ai-sender-macos-2.0.19-customer-test.zip
+          if unzip -Z1 ../telegram-ai-sender-macos-2.0.19-customer-test.zip | grep -E '(^|/)(\.env|\.git|\.github|data|venv|tests|__pycache__)(/|$)|\.session$|\.(sqlite|db|pyc)$'; then
+            echo "Forbidden content detected in final ZIP."
+            exit 1
+          fi
+
+      - name: Upload customer test ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-ai-sender-macos-2.0.19-customer-test
+          path: telegram-ai-sender-macos-2.0.19-customer-test.zip
+          if-no-files-found: error
+          retention-days: 14
