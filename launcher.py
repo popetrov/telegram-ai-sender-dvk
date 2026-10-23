@@ -897,6 +897,16 @@ def main():
     log("=== TELEGRAM AI SENDER LAUNCHER ===")
     log(f"Текущая версия: {current_version}")
 
+    # This customer-specific macOS branch is intentionally frozen.
+    # Do not contact GitHub Releases, download packages, or apply updates.
+    log("Автоматические обновления отключены для этой Mac-сборки.")
+    try:
+        process = start_application()
+    except Exception as exc:
+        log(f"Не удалось запустить приложение: {exc}")
+        return 1
+    return process.wait()
+
     # Apply a published update before starting the application. This is
     # important when the installed application cannot start until a fix is
     # installed (for example, first-run authorization support).
