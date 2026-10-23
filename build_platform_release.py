@@ -12,6 +12,7 @@ CENTER_FILES = {
     'access_server.py', 'access_lease.py', 'access_runtime.py', 'authority_store.py',
     'sync_protocol.py', 'sync_runtime.py', 'sync_data.py', 'file_lock.py',
     'center_setup.py', 'center_backup.py', 'center.bat', 'center_mac.sh',
+    'center_runtime.py', 'owner_notifications.py',
     'requirements-authority.txt', 'PILOT.md', 'DATA_POLICY.md', 'PROJECT_AUDIT.md',
 }
 

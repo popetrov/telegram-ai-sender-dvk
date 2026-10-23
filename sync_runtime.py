@@ -13,7 +13,7 @@ from sync_data import next_event, TABLES
 log = logging.getLogger(__name__)
 
 
-def register_receiver(application, store, signing_key, encryption_key):
+def register_receiver(application, store, signing_key, encryption_key, notices=None):
     from telegram.ext import MessageHandler, filters
 
     async def receive(update, context):
@@ -39,6 +39,12 @@ def register_receiver(application, store, signing_key, encryption_key):
         except Exception as exc:
             # Never put client records, tokens or decrypted data into logs.
             log.warning('Upload rejected or interrupted (%s)', type(exc).__name__)
+            if notices is not None:
+                # Requests from unassigned accounts are ordinary onboarding, not alarms.
+                managers = store.list_managers()
+                account_id = update.effective_user.id
+                if any(m['account_id'] == account_id and m['company_id'] for m in managers):
+                    notices.error('приём данных', exc, account_id)
 
     application.add_handler(MessageHandler(filters.Document.ALL, receive))
 

@@ -111,6 +111,8 @@ async def start(client):
     manager = os.getenv("MANAGER_ID", "").strip()
     if not authority or not public or not manager:
         raise RuntimeError("Задайте ACCESS_BOT_USERNAME, ACCESS_PUBLIC_KEY и MANAGER_ID в .env.")
+    if authority.casefold() == 'asdvk2026_bot':
+        raise RuntimeError('Перенесите обмен в технического бота: python manager_setup.py --service-bot dvk_sync2026_bot')
     me = await client.get_me()
     account_id = me.id
     _store = LeaseStore(Path("data/access_lease.json"),

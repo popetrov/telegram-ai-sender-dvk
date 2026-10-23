@@ -69,7 +69,9 @@ def initialize_key():
     return key, public
 
 
-def create_server(token, admin_id, key, store=None, sync_key=None):
+def create_server(token, admin_id, key, store=None, sync_key=None, *, role='combined', notices=None):
+    if role not in ('combined', 'admin', 'service'):
+        raise ValueError('Invalid center role')
     application = Application.builder().token(token).build()
 
     async def lease(update, context):
@@ -102,7 +104,15 @@ def create_server(token, admin_id, key, store=None, sync_key=None):
                              subscription_end=subscription_end)
             await update.effective_message.reply_text(
                 "DVK_ACCESS " + json.dumps(envelope, separators=(",", ":")), disable_notification=True)
-            if new_request:
+            if notices is not None:
+                if new_request:
+                    notices.once(f'request:{subject}',
+                        f'Новый менеджер: Telegram ID {account_id}. Ожидает подключения.\n'
+                        f'Разрешить: /approve {account_id} КОМПАНИЯ')
+                if allowed:
+                    notices.once(f'connected:{subject}',
+                                 f'Менеджер {account_id} подключён. Доступ подтверждён центром.')
+            elif new_request:
                 await context.bot.send_message(admin_id,
                     f"Новая установка: Telegram ID {account_id}\n"
                     f"Идентификатор: {subject}\n"
@@ -191,18 +201,22 @@ def create_server(token, admin_id, key, store=None, sync_key=None):
         except ValueError as exc:
             await update.effective_message.reply_text(str(exc))
 
-    for command in ('company', 'company_off', 'renew', 'companies'):
-        application.add_handler(CommandHandler(command, companies))
-    if sync_key is not None and store is not None:
+    if role != 'service':
+        for command in ('company', 'company_off', 'renew', 'companies'):
+            application.add_handler(CommandHandler(command, companies))
+        application.add_handler(CommandHandler("users", users))
+        application.add_handler(CommandHandler("approve", decision))
+        application.add_handler(CommandHandler("revoke", decision))
+        application.add_handler(CommandHandler("start", status))
+    if role != 'admin' and sync_key is not None and store is not None:
         from sync_runtime import register_receiver
-        register_receiver(application, store, key, sync_key)
-    application.add_handler(CommandHandler("users", users))
-    application.add_handler(CommandHandler("lease", lease))
-    application.add_handler(CommandHandler("approve", decision))
-    application.add_handler(CommandHandler("revoke", decision))
-    application.add_handler(CommandHandler("start", status))
+        register_receiver(application, store, key, sync_key, notices=notices)
+    if role != 'admin':
+        application.add_handler(CommandHandler("lease", lease))
     async def on_error(update, context):
         logging.getLogger(__name__).error('Center operation failed (%s)', type(context.error).__name__)
+        if notices is not None:
+            notices.error('работа центра', context.error)
     application.add_error_handler(on_error)
     return application
 
@@ -211,9 +225,15 @@ def main():
     # Separate config: never accidentally poll a manager bot with BOT_TOKEN.
     load_dotenv(ROOT / ".env.authority")
     token = os.getenv("ACCESS_AUTHORITY_BOT_TOKEN", "").strip()
+    service_token = os.getenv('ACCESS_SERVICE_BOT_TOKEN', '').strip()
+    service_username = os.getenv('ACCESS_SERVICE_BOT_USERNAME', '').strip().lstrip('@')
     admin_id = int(os.environ["ACCESS_AUTHORITY_ADMIN_ID"])
     if not token or admin_id <= 0:
         raise RuntimeError("Configure .env.authority; see CENTRAL_ACCESS.md")
+    if not service_token or not service_username:
+        raise RuntimeError('Сначала настройте технического бота: center.bat service-config')
+    if token == service_token:
+        raise RuntimeError('Нужен отдельный токен технического бота.')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
     # HTTP request URLs contain the bot token; never log them.
     logging.getLogger('httpx').setLevel(logging.WARNING)
@@ -227,22 +247,15 @@ def main():
         (STATE / 'sync_public_key.txt').write_text(public_text(sync_key) + '\n', encoding='ascii')
         print('Sync public key (safe to distribute): ' + public_text(sync_key))
         store = AuthorityStore(STATE / 'authority.sqlite')
-        application = create_server(token, admin_id, key, store, sync_key)
-        backup_task = None
-        async def after_start(app):
-            nonlocal backup_task
-            if (STATE / 'backup.json').exists():
-                from center_backup import loop
-                backup_task = asyncio.create_task(loop(STATE, STATE / 'backup.json'))
-            print('Центр подключён к Telegram. Откройте @asdvk2026_bot и отправьте /start.', flush=True)
-        async def after_stop(app):
-            if backup_task:
-                backup_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await backup_task
-        application.post_init = after_start
-        application.post_shutdown = after_stop
-        application.run_polling()
+        from owner_notifications import OwnerNotifications
+        from center_runtime import run_center
+        notices = OwnerNotifications(store)
+        admin = create_server(token, admin_id, key, store, role='admin', notices=notices)
+        service = create_server(service_token, admin_id, key, store, sync_key, role='service', notices=notices)
+        try:
+            asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username))
+        except KeyboardInterrupt:
+            print('Центр остановлен.')
 
 
 if __name__ == "__main__":

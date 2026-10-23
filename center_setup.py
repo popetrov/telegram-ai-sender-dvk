@@ -40,6 +40,38 @@ def install(root=ROOT):
     return python
 
 
+def configure_service(root=ROOT):
+    from dotenv import dotenv_values, set_key
+    import re
+    path = Path(root) / '.env.authority'
+    if not path.is_file():
+        raise RuntimeError('Сначала настройте административного бота.')
+    current = dotenv_values(path)
+    username = input('Имя технического бота без @ [dvk_sync2026_bot]: ').strip().lstrip('@') or 'dvk_sync2026_bot'
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', username) or not username.lower().endswith('bot'):
+        raise ValueError('Некорректное имя технического бота.')
+    token = getpass('Токен технического бота (ввод скрыт): ').strip()
+    if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
+        raise ValueError('Некорректный токен технического бота.')
+    if token == current.get('ACCESS_AUTHORITY_BOT_TOKEN'):
+        raise ValueError('Технический бот должен отличаться от административного.')
+    from file_lock import FileLock
+    import uuid
+    with FileLock(Path(root) / 'data/access_authority/center.lock'):
+        backup = path.with_name('.env.authority.before-service-' + uuid.uuid4().hex)
+        with backup.open('xb') as stream:
+            stream.write(path.read_bytes())
+        if os.name != 'nt':
+            backup.chmod(0o600)
+        try:
+            set_key(str(path), 'ACCESS_SERVICE_BOT_TOKEN', token)
+            set_key(str(path), 'ACCESS_SERVICE_BOT_USERNAME', username)
+        except BaseException:
+            path.write_bytes(backup.read_bytes())
+            raise
+    print('Технический бот настроен локально. Токен не отправляйте в чат. Центр пока не запускайте.')
+
+
 def startup(enable):
     if os.name != 'nt':
         raise RuntimeError('Автозапуск этой командой доступен только в Windows')
@@ -55,7 +87,7 @@ def startup(enable):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'configure', 'run', 'check', 'autostart-on', 'autostart-off', 'backup-config'])
+    parser.add_argument('command', choices=['install', 'configure', 'run', 'check', 'autostart-on', 'autostart-off', 'backup-config', 'service-config'])
     parser.add_argument('--directory')
     parser.add_argument('--keep-days', type=int, default=30)
     args = parser.parse_args()
@@ -70,6 +102,9 @@ def main():
         configure()
     elif args.command == 'configure':
         configure()
+    elif args.command == 'service-config':
+        python = ROOT / 'venv-center' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        return subprocess.call([str(python), '-c', 'import center_setup; center_setup.configure_service()'], cwd=ROOT)
     elif args.command == 'backup-config':
         if not args.directory or not 1 <= args.keep_days <= 3650:
             raise ValueError('Укажите --directory и срок 1–3650 дней')
