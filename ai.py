@@ -1,5 +1,3 @@
-import json
-import re
 from pathlib import Path
 
 from openai import OpenAI
@@ -11,201 +9,40 @@ MODEL = "gpt-5-mini"
 BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
 
-# Судебный API разрешён только для этих двух продуктов.
-ARBITRATION_PRODUCTS = {"Право_ООО", "Право_ИП"}
+
+def get_catalog():
+    import os
+    from product_catalog import ProductCatalog
+    from context_adapters import ADAPTERS
+    configured = os.getenv("BUSINESS_PRODUCTS_FILE", "").strip()
+    path = Path(configured).expanduser() if configured else PRODUCTS_FILE
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    prompts_dir = path.parent / "prompts" if configured else Path(config.PROMPTS_DIR)
+    if not prompts_dir.is_absolute():
+        prompts_dir = BASE_DIR / prompts_dir
+    return ProductCatalog(path, prompts_dir, adapters=ADAPTERS)
 
 
 def load_products():
-    if not PRODUCTS_FILE.exists():
-        raise FileNotFoundError(
-            f"Не найден реестр продуктов: {PRODUCTS_FILE}"
-        )
-
-    with PRODUCTS_FILE.open("r", encoding="utf-8") as file:
-        products = json.load(file)
-
-    if not isinstance(products, dict) or not products:
-        raise RuntimeError(
-            "Реестр products.json пустой или имеет неверный формат."
-        )
-
-    return products
+    return get_catalog().products
 
 
 def normalize_product(product):
-    value = str(product).strip().casefold()
-    products = load_products()
-
-    for product_name, settings in products.items():
-        if value == product_name.casefold():
-            return product_name
-
-        aliases = settings.get("aliases", [])
-
-        for alias in aliases:
-            if value == str(alias).strip().casefold():
-                return product_name
-
-    raise ValueError(
-        f"Неизвестный продукт: {product}. "
-        f"Проверьте реестр {PRODUCTS_FILE.name}."
-    )
+    return get_catalog().normalize(product)
 
 
 def get_prompt_file(product):
-    normalized_product = normalize_product(product)
-    settings = load_products()[normalized_product]
-    prompt_name = settings.get("prompt")
-
-    if not isinstance(prompt_name, str) or not prompt_name.strip():
-        raise RuntimeError(
-            f"Для продукта {normalized_product} "
-            "не указан файл prompt в products.json."
-        )
-
-    prompts_dir = Path(config.PROMPTS_DIR)
-
-    if not prompts_dir.is_absolute():
-        prompts_dir = BASE_DIR / prompts_dir
-
-    prompts_dir = prompts_dir.resolve()
-    prompt_path = (prompts_dir / prompt_name).resolve()
-
-    # Запрещаем выход из каталога промптов через путь в реестре.
-    if not prompt_path.is_relative_to(prompts_dir):
-        raise RuntimeError(
-            f"Недопустимый путь к prompt: {prompt_name}"
-        )
-
-    return prompt_path
+    return get_catalog().prompt_path(product)
 
 
 def load_prompt(product, inn):
-    prompt_path = get_prompt_file(product)
-
-    if not prompt_path.exists():
-        raise FileNotFoundError(
-            f"Файл prompt не найден: {prompt_path}"
-        )
-
-    prompt_text = prompt_path.read_text(encoding="utf-8")
-
-    if not prompt_text.strip():
-        raise RuntimeError(
-            f"Файл prompt пустой: {prompt_path}"
-        )
-
-    inn_value = str(inn).strip()
-
-    if not inn_value:
-        raise ValueError("ИНН компании не указан.")
-
-    # Поддерживаем заполнители «Конкретный ИНН», {ИНН} и {{ИНН}}.
-    placeholder_pattern = re.compile(
-        r"Конкретный\s+ИНН|\{\{\s*ИНН\s*\}\}|\{\s*ИНН\s*\}",
-        flags=re.IGNORECASE,
-    )
-
-    prompt_text, replacements = placeholder_pattern.subn(
-        lambda _: inn_value,
-        prompt_text,
-    )
-
-    # Если заполнителя нет, передаём ИНН в начале промпта.
-    if replacements == 0:
-        prompt_text = (
-            f"ИНН КОМПАНИИ ДЛЯ ИССЛЕДОВАНИЯ: {inn_value}\n\n"
-            f"{prompt_text}"
-        )
-
-    return prompt_path.name, prompt_text
-
-
-def get_arbitration_context(inn):
-    """
-    Получает судебные данные для юридического продукта.
-    Вызывается только для Право_ООО и Право_ИП.
-
-    Ошибка API не останавливает подготовку предложения
-    юридических услуг. Результат передаётся в prompt как данные.
-    """
-    from arbitration_api import find_latest_defendant_case
-
-    try:
-        result = find_latest_defendant_case(inn)
-
-        if not isinstance(result, dict):
-            return {
-                "status": "ERROR",
-                "case": None,
-                "reason": "API вернул результат неожиданного формата.",
-            }
-
-        status = result.get("status")
-
-        if status == "CONFIRMED":
-            case = result.get("case")
-
-            if not isinstance(case, dict):
-                return {
-                    "status": "ERROR",
-                    "case": None,
-                    "reason": "В ответе API отсутствуют данные дела.",
-                }
-
-            return {
-                "status": "CONFIRMED",
-                "case": case,
-                "reason": None,
-            }
-
-        if status == "NOT_FOUND":
-            return {
-                "status": "NOT_FOUND",
-                "case": None,
-                "reason": result.get("reason"),
-            }
-
-        return {
-            "status": "ERROR",
-            "case": None,
-            "reason": result.get("reason") or "Ошибка судебного API.",
-        }
-
-    except Exception:
-        # Не передаём технические подробности или секреты в prompt.
-        return {
-            "status": "ERROR",
-            "case": None,
-            "reason": "Не удалось получить данные судебного API.",
-        }
-
-
-def append_arbitration_context(prompt_text, inn):
-    """
-    Добавляет результат судебного поиска в prompt.
-    Правила подготовки сообщения остаются в продуктовом prompt.
-    """
-    arbitration_result = get_arbitration_context(inn)
-
-    context = {
-        "ИНН_исследуемой_компании": str(inn).strip(),
-        "статус_поиска": arbitration_result["status"],
-        "данные_дела": arbitration_result["case"],
-        "причина_отсутствия_данных": arbitration_result["reason"],
-    }
-
-    context_json = json.dumps(
-        context,
-        ensure_ascii=False,
-        indent=2,
-    )
-
-    return (
-        f"{prompt_text}\n\n"
-        "ДАННЫЕ СУДЕБНОГО API В ФОРМАТЕ JSON:\n"
-        f"{context_json}\n"
-    )
+    catalog = get_catalog()
+    # Legacy interface renders without full input validation; full validation
+    # is performed by the analysis entry point with all available fields.
+    settings = catalog.settings(product)
+    fields = {"inn": str(inn).strip()}
+    return settings["prompt"], catalog.render(product, fields, validate=False)
 
 
 def extract_message_from_markers(raw_result):
@@ -260,21 +97,18 @@ def generate_company_analysis(
     full_name,
     username,
     product,
+    fields=None,
 ):
-    normalized_product = normalize_product(product)
-
-    prompt_file, prompt_text = load_prompt(
-        normalized_product,
-        inn,
-    )
-
-    # Судебный API используется только для Право_ООО и Право_ИП.
-    # Для БГ, кредита, закупок и остальных продуктов вызова нет.
-    if normalized_product in ARBITRATION_PRODUCTS:
-        prompt_text = append_arbitration_context(
-            prompt_text=prompt_text,
-            inn=inn,
-        )
+    from context_adapters import apply_context_adapters
+    catalog = get_catalog()
+    normalized_product = catalog.normalize(product)
+    settings = catalog.settings(normalized_product)
+    inputs = dict(fields or {})
+    inputs.update(inn=str(inn or "").strip(), full_name=str(full_name or "").strip(),
+                  username=str(username or "").strip())
+    prompt_file = settings["prompt"]
+    prompt_text = catalog.render(normalized_product, inputs)
+    prompt_text = apply_context_adapters(settings["context_adapters"], prompt_text, inputs)
 
     if not config.OPENAI_API_KEY:
         raise RuntimeError(
@@ -286,8 +120,8 @@ def generate_company_analysis(
     # Полный выбранный prompt передаётся через input.
     # Дополнительный параметр instructions не используется.
     response = client.responses.create(
-        model=MODEL,
-        tools=[{"type": "web_search"}],
+        model=settings["model"],
+        tools=[{"type": tool} for tool in settings["tools"]],
         input=prompt_text,
     )
 
@@ -305,7 +139,8 @@ def generate_company_analysis(
         "product": normalized_product,
         "prompt_file": prompt_file,
         "prompt_text": prompt_text,
-        "model": MODEL,
+        "model": settings["model"],
+        "product_version": settings["version"],
     }
 
 

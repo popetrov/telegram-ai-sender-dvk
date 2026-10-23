@@ -5,3 +5,4 @@ pandas==3.0.6
 openpyxl==3.1.5
 python-telegram-bot==22.6
 qrcode==8.2
+cryptography==50.0.0

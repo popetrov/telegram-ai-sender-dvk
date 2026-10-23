@@ -1,3 +1,5 @@
+from access_lease import AccessDenied
+import access_runtime
 import asyncio
 import json
 import math
@@ -21,7 +23,6 @@ import config
 from ai import (
     extract_message_from_markers,
     generate_company_analysis,
-    normalize_product,
 )
 from database import (
     get_existing_client_keys,
@@ -49,7 +50,7 @@ MAX_EXCEL_SIZE_BYTES = 20 * 1024 * 1024
 MAX_ROWS_PER_IMPORT = 500
 MAX_PARALLEL_RESEARCH = 10
 
-REQUIRED_COLUMNS = ["ИНН", "ФИО", "Юзернейм", "Продукт"]
+REQUIRED_COLUMNS = ["Юзернейм", "Продукт"]
 
 QUEUE_KEY = "prepared_send_queue"
 PREPARING_KEY = "preparing_import"
@@ -180,7 +181,13 @@ def user_is_allowed(update: Update) -> bool:
     if update.effective_user is None:
         return False
 
-    return update.effective_user.id in load_allowed_users()
+    if update.effective_user.id not in load_allowed_users():
+        return False
+    try:
+        access_runtime.require_access()
+        return True
+    except AccessDenied:
+        return False
 
 
 def onboarding_text(user_id: int) -> str:
@@ -196,7 +203,7 @@ def onboarding_text(user_id: int) -> str:
         "обработка Excel и отправка сообщений недоступны.\n\n"
         f"Ваш Telegram ID: {user_id}\n\n"
         "После одобрения отправьте Excel .xlsx с колонками "
-        "ИНН, ФИО, Юзернейм, Продукт. Затем используйте /confirm, "
+        "Юзернейм, Продукт и поля выбранного продукта (для текущих ДВК: ИНН, ФИО). Затем используйте /confirm, "
         "чтобы подготовить сообщения. Бот покажет очередь и предложит "
         "время отправки; отправка начинается только после отдельного "
         "подтверждения. /queue — восстановить очередь, /cancel — "
@@ -419,18 +426,32 @@ def clean_value(value) -> str:
     return str(value).strip()
 
 
-def normalize_excel_row(row: dict) -> dict:
-    return {
-        "inn": normalize_inn(clean_value(row.get("ИНН"))),
-        "full_name": clean_value(row.get("ФИО")),
-        "username": normalize_username(
-            clean_value(row.get("Юзернейм"))
-        ),
+def normalize_excel_row(row: dict, catalog=None) -> dict:
+    from ai import get_catalog
+    result = {
+        "inn": "",
+        "full_name": "",
+        "username": normalize_username(clean_value(row.get("Юзернейм"))),
         "product_input": clean_value(row.get("Продукт")),
+        "fields": {},
     }
+    try:
+        settings = (catalog or get_catalog()).settings(result["product_input"])
+    except (ValueError, OSError):
+        # Report an unknown product through normal per-row validation.
+        return result
+    fields = {key: clean_value(row.get(column)) for key, column in settings["columns"].items()}
+    if "inn" in fields:
+        fields["inn"] = normalize_inn(fields["inn"])
+    result["fields"] = fields
+    result["inn"] = fields.get("inn", "")
+    result["full_name"] = fields.get("full_name", "")
+    return result
 
 
-def classify_excel_rows(df: pd.DataFrame) -> tuple[list, list]:
+def classify_excel_rows(df: pd.DataFrame, catalog=None) -> tuple[list, list]:
+    from ai import get_catalog
+    catalog = catalog or get_catalog()
     existing_inns, existing_usernames = get_existing_client_keys()
 
     seen_inns = set(existing_inns)
@@ -440,18 +461,18 @@ def classify_excel_rows(df: pd.DataFrame) -> tuple[list, list]:
     duplicates = []
 
     for index, raw_row in df.iterrows():
-        row = normalize_excel_row(raw_row.to_dict())
+        row = normalize_excel_row(raw_row.to_dict(), catalog)
         row["excel_row"] = int(index) + 2
 
         inn = row["inn"]
         username = row["username"]
 
-        if not inn or not username:
-            row["skip_reason"] = "Не заполнен ИНН или Юзернейм."
+        if not username:
+            row["skip_reason"] = "Не заполнен Юзернейм."
             duplicates.append(row)
             continue
 
-        if inn in seen_inns or username in seen_usernames:
+        if (inn and inn in seen_inns) or username in seen_usernames:
             row["skip_reason"] = (
                 "ИНН или username уже есть в локальной базе "
                 "либо повторяется в этом Excel."
@@ -466,36 +487,23 @@ def classify_excel_rows(df: pd.DataFrame) -> tuple[list, list]:
     return accepted, duplicates
 
 
-def validate_client_row(row: dict) -> str | None:
-    if not row["inn"]:
-        return "Не указан ИНН."
-
-    if len(row["inn"]) not in (10, 12):
-        return "ИНН должен содержать 10 или 12 цифр."
-
-    if not row["full_name"]:
-        return "Не указано ФИО."
-
+def validate_client_row(row: dict, catalog=None) -> str | None:
+    from ai import get_catalog
     if not row["username"]:
         return "Не указан username."
-
     if not row["product_input"]:
         return "Не указан продукт."
-
     try:
-        normalized_product = normalize_product(
-            row["product_input"]
-        )
-    except Exception as exc:
-        return f"Не удалось определить продукт: {exc}"
-
-    if not normalized_product:
-        return (
-            f"Продукт «{row['product_input']}» не найден "
-            "в реестре products.json."
-        )
-
-    row["product"] = normalized_product
+        catalog = catalog or get_catalog()
+        product = catalog.normalize(row["product_input"])
+        fields = row.get("fields", {"inn": row["inn"], "full_name": row["full_name"]})
+        catalog.validate_fields(product, fields)
+        # Retain legacy INN validation only when the package uses this field.
+        if "inn" in catalog.settings(product)["columns"] and row["inn"] and len(row["inn"]) not in (10, 12):
+            return "ИНН должен содержать 10 или 12 цифр."
+        row["product"] = product
+    except (ValueError, OSError) as exc:
+        return f"Ошибка настройки продукта или данных: {exc}"
     return None
 
 
@@ -656,6 +664,20 @@ def update_prepared_status(
         item["send_error"] = None
 
 
+async def access_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user is None or update.effective_user.id not in load_allowed_users():
+        await update.effective_message.reply_text("Сначала запросите локальный доступ: /request_access.")
+        return
+    try:
+        lease = access_runtime.require_access()
+        from datetime import timezone
+        expires = datetime.fromtimestamp(lease["expires_at"], timezone.utc)
+        text = f"Центральный доступ разрешён до {expires:%d.%m.%Y %H:%M} UTC. Проверка каждые 5 минут."
+    except AccessDenied as exc:
+        text = "Подготовка и отправка приостановлены: " + str(exc) + " Проверка центра повторяется автоматически."
+    await update.effective_message.reply_text(text)
+
+
 async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -673,7 +695,7 @@ async def start_command(
     await message.reply_text(
         "Telegram AI Sender готов.\n\n"
         "Отправьте Excel-файл .xlsx с колонками:\n"
-        "ИНН, ФИО, Юзернейм, Продукт.\n\n"
+        "Юзернейм, Продукт и поля выбранного продукта (для текущих ДВК: ИНН, ФИО).\n\n"
         "После проверки списка используйте /confirm.\n"
         "Готовые сообщения сохраняются в SQLite до отправки.\n"
         "После перезапуска их можно восстановить командой /queue.\n\n"
@@ -816,13 +838,19 @@ async def handle_excel(
             )
             return
 
-        accepted_rows, duplicate_rows = classify_excel_rows(df)
+        from ai import get_catalog
+        try:
+            catalog = get_catalog()
+        except (ValueError, OSError) as exc:
+            await update.effective_message.reply_text("Ошибка бизнес-пакета: " + str(exc))
+            return
+        accepted_rows, duplicate_rows = classify_excel_rows(df, catalog)
 
         valid_rows = []
         invalid_rows = []
 
         for row in accepted_rows:
-            validation_error = validate_client_row(row)
+            validation_error = validate_client_row(row, catalog)
 
             if validation_error:
                 row["skip_reason"] = validation_error
@@ -890,6 +918,10 @@ async def handle_excel(
 async def prepare_one_client(
     row: dict,
 ) -> tuple[str, str, dict | None]:
+    try:
+        access_runtime.require_access()
+    except AccessDenied as exc:
+        return "manual_review", str(exc), None
     inn = row["inn"]
     full_name = row["full_name"]
     username = row["username"]
@@ -989,6 +1021,7 @@ async def prepare_one_client(
             full_name,
             username,
             product,
+            fields=row.get("fields"),
         )
     except Exception as exc:
         return (
@@ -1300,6 +1333,7 @@ async def send_one_prepared_message(
     восстановления. Остальные uncertain-записи не отправляются.
     """
 
+    access_runtime.require_access()
     inn = item["inn"]
     full_name = item["full_name"]
     username = item["username"]
@@ -1463,6 +1497,15 @@ async def send_one_prepared_message(
 
         return "send_failed", error_text
 
+    # This runs after peer resolution too: a revocation received while awaiting
+    # Telegram must prevent the next outgoing client message.
+    try:
+        access_runtime.require_access()
+    except AccessDenied as exc:
+        update_message_status(message_id=message_id, status="not_sent", send_error=str(exc))
+        update_client_status(client_id, "manual_review")
+        update_prepared_status(item, "manual_review", "Доступ отключён до отправки: " + str(exc))
+        raise
     try:
         sent_message = await telegram_client.send_message(
             entity,
@@ -1870,7 +1913,16 @@ async def send_queue_at_time(
                 continue
 
             try:
+                access_runtime.require_access()
                 status, details = await send_one_prepared_message(item)
+            except AccessDenied as exc:
+                queue["state"] = "interrupted"
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=("Отправка приостановлена: " + str(exc)
+                          + " Очередь сохранена. После восстановления доступа используйте /queue."),
+                )
+                return
             except Exception as exc:
                 status = "uncertain"
                 details = (
@@ -1966,6 +2018,7 @@ def create_bot() -> Application:
         config.BOT_TOKEN
     ).build()
 
+    application.add_handler(CommandHandler("access", access_status_command))
     application.add_handler(
         CommandHandler("start", start_command)
     )

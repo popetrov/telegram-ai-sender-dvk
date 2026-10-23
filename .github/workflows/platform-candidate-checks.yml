@@ -1,0 +1,53 @@
+name: Platform candidate checks
+
+on:
+  push:
+    branches:
+      - feature/central-access-leases
+  pull_request:
+    branches:
+      - main
+      - release/2.0.19
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check dependency consistency
+        run: python -m pip check
+      - name: Run tests without real Telegram or AI requests
+        run: python -m unittest discover -s tests -v
+      - name: Inspect shared entry point without starting sender
+        run: python start.py --check
+      - name: Inspect Windows wrapper
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: start.bat --check
+      - name: Inspect Unix wrapper
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash start_mac.sh --check
+      - name: Build development package (not an auto-update release)
+        run: python manual_update.py build --source . --output development-package.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: development-package-${{ matrix.os }}
+          path: |
+            development-package.zip
+            development-package.zip.sha256
+          if-no-files-found: error

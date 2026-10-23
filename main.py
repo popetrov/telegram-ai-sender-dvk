@@ -1,3 +1,4 @@
+import access_runtime
 import asyncio
 
 from pathlib import Path
@@ -132,10 +133,12 @@ async def ensure_telegram_authorized():
 
 async def main():
     bot = create_bot()
+    access_task = None
 
     try:
         await ensure_telegram_authorized()
         await connect()
+        access_task = await access_runtime.start(client)
 
         print("=== TELEGRAM AI SENDER 2.0.19 ===")
         print("Основная Telegram-сессия подключена.")
@@ -158,6 +161,7 @@ async def main():
             await bot.shutdown()
 
     finally:
+        await access_runtime.stop(access_task)
         await disconnect()
 
 

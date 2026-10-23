@@ -5,7 +5,9 @@
       "бг",
       "банковская гарантия",
       "bank guarantee"
-    ]
+    ],
+    "version": "1",
+    "context_adapters": []
   },
   "Кредит": {
     "prompt": "credit.md",
@@ -13,12 +15,18 @@
       "кредит",
       "кредиты",
       "credit"
-    ]
+    ],
+    "version": "1",
+    "context_adapters": []
   },
   "Право_ООО": {
     "prompt": "pravo_ooo.md",
     "aliases": [
       "право_ооо"
+    ],
+    "version": "1",
+    "context_adapters": [
+      "arbitration"
     ]
   },
   "Закупки": {
@@ -26,12 +34,18 @@
     "aliases": [
       "закупки",
       "двк закупки"
-    ]
+    ],
+    "version": "1",
+    "context_adapters": []
   },
   "Право_ИП": {
     "prompt": "pravo_ip.md",
     "aliases": [
       "право_ип"
+    ],
+    "version": "1",
+    "context_adapters": [
+      "arbitration"
     ]
   },
   "Николай": {
@@ -40,6 +54,8 @@
       "николай",
       "николай григорян",
       "tchkarosta"
-    ]
+    ],
+    "version": "1",
+    "context_adapters": []
   }
 }

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "products": {
+    "Услуги для бизнеса": {
+      "version": "1",
+      "prompt": "service.md",
+      "aliases": ["сервис"],
+      "columns": {"company": "Компания", "website": "Сайт"},
+      "required_fields": ["company", "website"],
+      "context_adapters": [],
+      "model": "gpt-5-mini",
+      "tools": ["web_search"]
+    }
+  }
+}
