@@ -76,11 +76,11 @@ def startup(enable):
     if os.name != 'nt':
         raise RuntimeError('Автозапуск этой командой доступен только в Windows')
     target = Path(os.environ['APPDATA']) / 'Microsoft/Windows/Start Menu/Programs/Startup/DVK Center.cmd'
-    content = '@echo off\r\nchcp 65001 >nul\r\ncall "' + str(ROOT / 'center.bat') + '" run\r\n'
+    content = '@echo off\nchcp 65001 >nul\ncall "' + str(ROOT / 'center.bat') + '" run\n'
     if target.exists() and target.read_text('utf-8') != content:
         raise RuntimeError('Автозапуск указывает на другую установку. Сначала отключите его там.')
     if enable:
-        target.write_text(content, encoding='utf-8')
+        target.write_text(content, encoding='utf-8', newline='\r\n')
     elif target.exists():
         target.unlink()
 
