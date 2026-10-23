@@ -19,6 +19,11 @@ def main():
     # must not hide the original unittest failure or turn success into failure.
     sys.stdout.write(output.encode(sys.stdout.encoding or "utf-8", errors="backslashreplace")
                      .decode(sys.stdout.encoding or "utf-8"))
+    if result.returncode and os.getenv("GITHUB_ACTIONS") == "true":
+        # Publish only this synthetic test suite's failure diagnostics as an
+        # annotation, so failures remain reviewable without log-download access.
+        diagnostic = output[-18000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print("::error title=Unittest failure diagnostics::" + diagnostic)
     summary = os.getenv("GITHUB_STEP_SUMMARY")
     if summary:
         with Path(summary).open("a", encoding="utf-8") as stream:
