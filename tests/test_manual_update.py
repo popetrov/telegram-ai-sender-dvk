@@ -137,6 +137,19 @@ class ManualUpdateTests(unittest.TestCase):
         self.assertIn("Custom", result["products"])
         self.assertIn("БГ", result["products"])
 
+    def test_clean_windows_line_endings_do_not_preserve_obsolete_code(self):
+        (self.source/"main.py").write_bytes(b"VALUE = 0\r\n")
+        (self.source/"version.txt").write_bytes(b"2.0.9\r\n")
+        def baseline(root, name):
+            return {"main.py": b"VALUE = 0\n", "version.txt": b"2.0.9\n"}.get(name, updater.MISSING)
+        with patch.object(updater, "git_baseline", side_effect=baseline):
+            report = updater.prepare(self.source, self.zip, self.digest, self.destination)
+        self.assertEqual((self.destination/"main.py").read_text("utf-8"), "VALUE = 1\n")
+        self.assertEqual((self.destination/"version.txt").read_text("utf-8").strip(), "2.0.20")
+        self.assertNotIn("main.py", report["preserved"])
+        self.assertNotIn("version.txt", report["conflicts"])
+        self.assertEqual((self.source/"main.py").read_bytes(), b"VALUE = 0\r\n")
+
     def test_existing_and_nested_destinations_rejected(self):
         for destination in [self.source, self.source/"child", self.root]:
             with self.subTest(destination=destination), self.assertRaises(ValueError):

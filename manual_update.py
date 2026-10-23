@@ -123,6 +123,11 @@ def git_baseline(root, name):
     return result.stdout if result.returncode == 0 else MISSING
 
 
+def same_text(left, right):
+    """Git stores LF while a clean Windows checkout can contain CRLF."""
+    return left.replace(b"\r\n", b"\n") == right.replace(b"\r\n", b"\n")
+
+
 def merge_json(base, local, incoming, conflicts, path="products"):
     """Three-way merge. Preserve local choices; report conflicting changes."""
     if local == incoming:
@@ -242,11 +247,11 @@ def prepare(source, package, expected_hash, destination):
                     content = (json.dumps(merged, ensure_ascii=False, indent=2)+"\n").encode()
                     if content != incoming:
                         report["preserved"].append(name)
-                elif name.startswith("prompts/") or (base is not MISSING and local != base):
-                    if local != incoming and (base is MISSING or local != base):
+                elif name.startswith("prompts/") or (base is not MISSING and not same_text(local, base)):
+                    if not same_text(local, incoming) and (base is MISSING or not same_text(local, base)):
                         content = local
                         report["preserved"].append(name)
-                        if base is MISSING or incoming != base:
+                        if base is MISSING or not same_text(incoming, base):
                             report["conflicts"].append(name)
             target.write_bytes(content)
         # Include draft and custom prompt files absent from the incoming release.
