@@ -161,7 +161,7 @@ async def main():
         sync_task = await sync_runtime.start(client)
 
         version = Path('version.txt').read_text('utf-8-sig').strip()
-        print(f"=== TELEGRAM AI SENDER {version} (PILOT) ===")
+        print(f"=== TELEGRAM AI SENDER {version} ===")
         print("Основная Telegram-сессия подключена.")
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")

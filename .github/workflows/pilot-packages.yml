@@ -1,12 +1,17 @@
-name: Verify and publish pilot packages
+name: Verify and publish platform packages
 
 on:
   push:
     branches: [feature/central-access-leases]
+    tags: ['v2.0.*']
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: platform-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   verify:
@@ -29,20 +34,15 @@ jobs:
       - run: python start.py --check
       - run: python center_setup.py check
       - run: python build_platform_release.py --output dist
-      - name: Install transition from actual legacy source with synthetic data (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
+      - name: Install transition from actual legacy source with synthetic data
+        shell: bash
         run: |
+          set -euo pipefail
           python -m zipfile -e dist/dvk-transition-pilot.zip transition-smoke
-          if errorlevel 1 exit /b 1
           python tests/transition_fixture.py --bundle transition-smoke --destination legacy-smoke
-          if errorlevel 1 exit /b 1
           python transition-smoke/transition_setup.py --source legacy-smoke --destination candidate-smoke --sender-stopped
-          if errorlevel 1 exit /b 1
           python tests/transition_fixture.py --bundle transition-smoke --destination bridge-legacy-smoke
-          if errorlevel 1 exit /b 1
           python tests/bridge_smoke.py --source bridge-legacy-smoke --packages dist
-          if errorlevel 1 exit /b 1
       - name: Smoke-test unpacked center with only center dependencies
         shell: bash
         run: |
@@ -70,7 +70,7 @@ jobs:
 
   publish:
     needs: verify
-    if: github.ref == 'refs/heads/feature/central-access-leases'
+    if: github.ref == 'refs/heads/feature/central-access-leases' || startsWith(github.ref, 'refs/tags/v2.0.')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -80,11 +80,24 @@ jobs:
         with:
           name: pilot-packages
           path: dist
-      - name: Publish isolated prerelease without changing latest
+      - name: Publish verified release
         env:
           GH_TOKEN: ${{ github.token }}
           COMMIT_SHA: ${{ github.sha }}
           REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          TAG="pilot-center-${COMMIT_SHA:0:12}"
-          gh release create "$TAG" dist/* --repo "$REPOSITORY" --target "$COMMIT_SHA" --prerelease --latest=false --title "Center pilot ${COMMIT_SHA:0:12}" --notes-file PROJECT_AUDIT.md
+          set -euo pipefail
+          (cd dist && sha256sum -c *.sha256)
+          if [[ "$REF" == refs/tags/* ]]; then
+            VERSION="$(tr -d '\r\n' < version.txt)"
+            test "$REF_NAME" = "v$VERSION"
+            test -f "RELEASE_NOTES_$VERSION.md"
+            # Upload all assets while hidden; expose latest only after the upload succeeds.
+            gh release create "$REF_NAME" dist/* --repo "$REPOSITORY" --target "$COMMIT_SHA" --verify-tag --draft --title "Telegram AI Sender $REF_NAME" --notes-file "RELEASE_NOTES_$VERSION.md"
+            gh release edit "$REF_NAME" --repo "$REPOSITORY" --draft=false --prerelease=false --latest
+          else
+            TAG="pilot-center-${COMMIT_SHA:0:12}"
+            gh release create "$TAG" dist/* --repo "$REPOSITORY" --target "$COMMIT_SHA" --prerelease --latest=false --title "Center pilot ${COMMIT_SHA:0:12}" --notes-file PROJECT_AUDIT.md
+          fi
