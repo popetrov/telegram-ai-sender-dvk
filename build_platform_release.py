@@ -15,6 +15,7 @@ CENTER_FILES = {
     'sync_protocol.py', 'sync_runtime.py', 'sync_data.py', 'file_lock.py',
     'center_setup.py', 'center_backup.py', 'center.bat', 'center_mac.sh',
     'center_runtime.py', 'owner_notifications.py',
+    'manager_directory.py', 'sheets_directory_sync.py', 'google_roster_bridge.gs', 'GOOGLE_ROSTER.md',
     'requirements-authority.txt', 'PILOT.md', 'DATA_POLICY.md', 'PROJECT_AUDIT.md',
 }
 

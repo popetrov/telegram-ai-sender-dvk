@@ -87,7 +87,7 @@ def startup(enable):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'configure', 'run', 'check', 'autostart-on', 'autostart-off', 'backup-config', 'service-config'])
+    parser.add_argument('command', choices=['install', 'configure', 'run', 'check', 'autostart-on', 'autostart-off', 'backup-config', 'service-config', 'sheets-config'])
     parser.add_argument('--directory')
     parser.add_argument('--keep-days', type=int, default=30)
     args = parser.parse_args()
@@ -105,6 +105,9 @@ def main():
     elif args.command == 'service-config':
         python = ROOT / 'venv-center' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
         return subprocess.call([str(python), '-c', 'import center_setup; center_setup.configure_service()'], cwd=ROOT)
+    elif args.command == 'sheets-config':
+        from sheets_directory_sync import configure as configure_sheets
+        configure_sheets(ROOT / 'data/access_authority')
     elif args.command == 'backup-config':
         if not args.directory or not 1 <= args.keep_days <= 3650:
             raise ValueError('Укажите --directory и срок 1–3650 дней')

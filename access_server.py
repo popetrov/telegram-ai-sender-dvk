@@ -70,7 +70,7 @@ def initialize_key():
     return key, public
 
 
-def create_server(token, admin_id, key, store=None, sync_key=None, *, role='combined', notices=None):
+def create_server(token, admin_id, key, store=None, sync_key=None, *, role='combined', notices=None, directory=None):
     if role not in ('combined', 'admin', 'service'):
         raise ValueError('Invalid center role')
     application = (Application.builder().token(token)
@@ -144,6 +144,11 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                     if len(context.args) != 2:
                         raise ValueError('Формат: /approve ID КОМПАНИЯ (например dvk)')
                     store.assign(target, context.args[1])
+                    if directory is not None and directory.profile(target) is None:
+                        prompt = directory.begin(admin_id, target)
+                        await update.effective_message.reply_text(
+                            'Доступ выдан. Теперь заполним внутреннюю карточку; менеджер этих полей не получит.\n' + prompt)
+                        return
                 else:
                     store.revoke(target)
                 await update.effective_message.reply_text('Решение сохранено. Применится при следующей проверке.')
@@ -170,7 +175,9 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                 'Центр работает.\n/users — менеджеры\n/companies — компании\n'
                 '/company ID — создать или включить\n/company_off ID — отключить компанию\n'
                 '/renew ID — продлить на месяц + 2 дня\n/approve ID КОМПАНИЯ\n/revoke ID\n'
-                'Часовой пояс: Asia/Dubai. dvk — бессрочно.')
+                'Часовой пояс: Asia/Dubai. dvk — бессрочно.'
+                + ('\n/profile ID — внутренняя карточка\n/cancel — отменить заполнение карточки'
+                   if directory is not None else ''))
             return
         registry = load_registry()
         await update.effective_message.reply_text(
@@ -218,6 +225,9 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
         application.add_handler(CommandHandler("approve", decision))
         application.add_handler(CommandHandler("revoke", decision))
         application.add_handler(CommandHandler("start", status))
+        if directory is not None:
+            from manager_directory import register_admin_handlers
+            register_admin_handlers(application, directory, admin_id)
     if role != 'admin' and sync_key is not None and store is not None:
         from sync_runtime import register_receiver
         register_receiver(application, store, key, sync_key, notices=notices)
@@ -260,10 +270,12 @@ def main():
         from owner_notifications import OwnerNotifications
         from center_runtime import run_center
         notices = OwnerNotifications(store)
-        admin = create_server(token, admin_id, key, store, role='admin', notices=notices)
+        from manager_directory import ManagerDirectory
+        directory = ManagerDirectory(store)
+        admin = create_server(token, admin_id, key, store, role='admin', notices=notices, directory=directory)
         service = create_server(service_token, admin_id, key, store, sync_key, role='service', notices=notices)
         try:
-            asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username))
+            asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username, directory=directory))
         except KeyboardInterrupt:
             print('Центр остановлен.')
 
