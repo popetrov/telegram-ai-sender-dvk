@@ -37,6 +37,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle',type=Path,required=True)
     parser.add_argument('--destination',type=Path,required=True)
+    parser.add_argument('--profile',default='windows-2.0.19',choices=['windows-2.0.19','macos-2.0.19','owner-2.0.9'])
     args = parser.parse_args()
-    create_fixture(json.loads((args.bundle/'legacy-baselines.json').read_text('utf-8')),args.destination)
+    create_fixture(json.loads((args.bundle/'legacy-baselines.json').read_text('utf-8')),args.destination,args.profile)
     print('Legacy 2.0.19 source materialized with synthetic local settings and database.')

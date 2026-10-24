@@ -1,0 +1,61 @@
+name: Verify and publish frozen Mac activation
+
+on:
+  push:
+    tags: ['mac-activation-2.0.20']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt
+      - run: python tests/run_ci.py
+      - name: Build activator using the unchanged published 2.0.20 bridge
+        run: python build_mac_frozen_update.py --output mac-output/dvk-macos-update-2.0.20.zip
+      - name: Exercise actual frozen Mac installation and original start script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python build_platform_release.py --output fixture-packages
+          python -m zipfile -e fixture-packages/dvk-transition-pilot.zip fixture-bundle
+          python tests/transition_fixture.py --bundle fixture-bundle --destination frozen-mac --profile macos-2.0.19
+          git show origin/macos-support-2.0.19:start_mac.sh > frozen-mac/start_mac.sh
+          cp frozen-mac/start_mac.sh original-start.sh
+          python -m zipfile -e mac-output/dvk-macos-update-2.0.20.zip frozen-mac
+          bash "frozen-mac/Обновить ДВК.command" --check-only
+          python tests/bridge_smoke.py --source frozen-mac --verify-only
+          cmp frozen-mac/start_mac.sh original-start.sh
+          bash -n frozen-mac/start_mac.sh
+          python frozen-mac/launcher.py --self-check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frozen-mac-activation
+          path: mac-output/*
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: frozen-mac-activation
+          path: mac-output
+      - name: Add verified Mac helper without changing the stable runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          (cd mac-output && sha256sum -c *.sha256)
+          gh release upload v2.0.20 mac-output/* --repo "$REPOSITORY"
