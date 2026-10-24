@@ -16,6 +16,8 @@ MAX_PACKET = 2 * 1024 * 1024
 AAD = b'DVK_SYNC_V1'
 CHUNK_BYTES = 256 * 1024
 MAX_EVENT = 64 * 1024 * 1024
+MAX_BATCH_RECORDS = 100
+MAX_BATCH_BYTES = 512 * 1024
 
 
 def b64(data):
@@ -81,6 +83,34 @@ def verify_receipt(key, envelope, subject, event_id, digest):
 
 def event_digest(payload):
     return hashlib.sha256(canonical(payload)).hexdigest()
+
+
+def batch_members(payload):
+    """Validate the whole bounded batch before opening a write transaction."""
+    from sync_data import TABLES
+    if (not isinstance(payload, dict) or not isinstance(payload.get('installation'), str)
+            or not payload['installation'] or len(canonical(payload)) > MAX_BATCH_BYTES):
+        raise ValueError('Invalid sync batch envelope')
+    data = payload.get('data', {})
+    if not isinstance(data, dict) or data.get('table') != 'sync_batch':
+        raise ValueError('Invalid sync batch type')
+    row = data.get('row', {})
+    events = row.get('events') if isinstance(row, dict) else None
+    if not isinstance(events, list) or not 2 <= len(events) <= MAX_BATCH_RECORDS:
+        raise ValueError('Invalid sync batch length')
+    result, seen = [], set()
+    for event in events:
+        if not isinstance(event, dict) or set(event) != {'event_id', 'data'}:
+            raise ValueError('Invalid sync batch member')
+        event_id, business = event['event_id'], event['data']
+        if (not isinstance(event_id, str) or len(event_id) != 32
+                or any(c not in '0123456789abcdef' for c in event_id) or event_id in seen
+                or not isinstance(business, dict) or business.get('table') not in TABLES
+                or not isinstance(business.get('row'), dict)):
+            raise ValueError('Invalid or duplicate sync batch event')
+        seen.add(event_id)
+        result.append((event_id, dict(installation=payload['installation'], data=business)))
+    return result
 
 
 def event_parts(event_id, data):

@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import base64
 from access_runtime import transport_lock, cleanup_service_messages
 from sync_protocol import (MAX_PACKET, decrypt, encrypt, receipt, event_digest, verify_receipt, event_parts)
-from sync_data import next_event, TABLES
+from sync_data import next_transfer, acknowledge_transfer, TABLES
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def register_receiver(application, store, signing_key, encryption_key, notices=N
             if (not isinstance(subject, str) or not isinstance(event_id, str) or len(event_id) != 32
                     or any(c not in '0123456789abcdef' for c in event_id)
                     or not isinstance(data, dict) or not isinstance(data.get('installation'), str)
-                    or data.get('data', {}).get('table') not in (*TABLES, 'sync_fragment')):
+                    or data.get('data', {}).get('table') not in (*TABLES, 'sync_fragment', 'sync_batch')):
                 raise ValueError('Invalid sync data')
             digest = event_digest(data)
             stage = 'save'
@@ -77,11 +77,11 @@ async def start(client):
         while True:
             try:
                 with get_connection() as db:
-                    event = next_event(db)
-                if event is None:
+                    transfer = next_transfer(db)
+                if transfer is None:
                     await asyncio.sleep(5)
                     continue
-                event_id, data = event
+                event_ids, event_id, data = transfer
                 for wire_id, wire_data in event_parts(event_id, data):
                     packet = encrypt(encryption, dict(subject=subject, event_id=wire_id, data=wire_data))
                     stream = io.BytesIO(packet)
@@ -103,7 +103,8 @@ async def start(client):
                             await cleanup_service_messages(client, authority, sent, response)
                     await asyncio.sleep(2)
                 with get_connection() as db:
-                    db.execute('DELETE FROM sync_outbox WHERE event_id=?', (event_id,))
+                    acknowledge_transfer(db, event_ids)
+                log.info('Sync confirmed: %d business records', len(event_ids))
                 await asyncio.sleep(2)
             except Exception as exc:
                 log.warning('Sync unavailable (%s); durable outbox retained', type(exc).__name__)

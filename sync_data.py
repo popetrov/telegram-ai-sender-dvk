@@ -40,3 +40,32 @@ def next_event(db):
         return None
     installation = db.execute("SELECT value FROM local_settings WHERE key='sync_installation_id'").fetchone()[0]
     return row['event_id'], dict(installation=installation, data=json.loads(row['payload']))
+
+
+def next_transfer(db):
+    """Pack consecutive pending events; oversized single events keep fragmentation."""
+    from sync_protocol import MAX_BATCH_RECORDS, MAX_BATCH_BYTES, event_digest
+    from access_lease import canonical
+    installation = db.execute("SELECT value FROM local_settings WHERE key='sync_installation_id'").fetchone()[0]
+    events = []
+    envelope = dict(installation=installation, data=dict(table='sync_batch', row=dict(events=events)))
+    for row in db.execute('SELECT event_id,payload FROM sync_outbox ORDER BY sequence LIMIT ?', (MAX_BATCH_RECORDS,)):
+        event = dict(event_id=row['event_id'], data=json.loads(row['payload']))
+        events.append(event)
+        if len(canonical(envelope)) > MAX_BATCH_BYTES:
+            events.pop()
+            if not events:
+                single = dict(installation=installation, data=event['data'])
+                return [event['event_id']], event['event_id'], single
+            break
+    if not events:
+        return None
+    if len(events) == 1:
+        event = events[0]
+        return [event['event_id']], event['event_id'], dict(installation=installation, data=event['data'])
+    return [event['event_id'] for event in events], event_digest(envelope)[:32], envelope
+
+
+def acknowledge_transfer(db, event_ids):
+    """Caller holds the transaction and has verified the whole signed receipt."""
+    db.executemany('DELETE FROM sync_outbox WHERE event_id=?', ((event_id,) for event_id in event_ids))

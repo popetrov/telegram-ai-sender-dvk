@@ -108,6 +108,8 @@ class AuthorityStore:
 
     def receive(self, account_id, subject, event_id, digest, payload):
         # Revoked/expired managers may still deliver previously collected data.
+        if payload.get('data', {}).get('table') == 'sync_batch':
+            return self.receive_batch(account_id, subject, event_id, digest, payload)
         with self.connection() as db:
             manager = db.execute('SELECT * FROM managers WHERE account_id=?', (account_id,)).fetchone()
             if not manager or manager['subject'] != subject or not manager['company_id']:
@@ -161,3 +163,24 @@ class AuthorityStore:
             db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?)',
                        (account_id, event_id, digest, json.dumps(payload, ensure_ascii=False),
                         int(time.time()), manager['company_id'], subject))
+
+    def receive_batch(self, account_id, subject, event_id, digest, payload):
+        from sync_protocol import batch_members, event_digest
+        members = batch_members(payload)
+        if digest != event_digest(payload) or event_id != digest[:32]:
+            raise ValueError('Sync batch identity mismatch')
+        with self.connection() as db:
+            manager = db.execute('SELECT * FROM managers WHERE account_id=?', (account_id,)).fetchone()
+            if not manager or manager['subject'] != subject or not manager['company_id']:
+                raise ValueError('Unbound identity')
+            for member_id, member in members:
+                member_digest = event_digest(member)
+                old = db.execute('SELECT digest FROM events WHERE account_id=? AND event_id=?',
+                                 (account_id, member_id)).fetchone()
+                if old and old['digest'] != member_digest:
+                    raise ValueError('Conflicting batch member ID')
+                db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?)',
+                           (account_id, member_id, member_digest, json.dumps(member, ensure_ascii=False),
+                            int(time.time()), manager['company_id'], subject))
+            # The context commits every member together before the caller signs
+            # the receipt. A conflict rolls back earlier members of this batch.
