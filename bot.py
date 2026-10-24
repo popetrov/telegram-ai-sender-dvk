@@ -5,6 +5,7 @@ import json
 import math
 import os
 import secrets
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from telegram.ext import (
 )
 
 import config
+from telethon.errors import FloodWaitError
 from ai import (
     extract_message_from_markers,
     generate_company_analysis,
@@ -55,6 +57,39 @@ REQUIRED_COLUMNS = ["Юзернейм", "Продукт"]
 QUEUE_KEY = "prepared_send_queue"
 PREPARING_KEY = "preparing_import"
 SCHEDULE_TASK_KEY = "scheduled_send_task"
+
+
+class TelegramSendPause(RuntimeError):
+    """Stop the whole queue; never turn a rate limit into a per-client loop."""
+
+
+def require_send_cooldown_finished():
+    path = DATA_DIR / 'send_cooldown.json'
+    if path.exists():
+        try:
+            until = float(json.loads(path.read_text('utf-8'))['until'])
+            if not math.isfinite(until):
+                raise ValueError('Invalid cooldown')
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise TelegramSendPause('Не удалось проверить сохранённую паузу Telegram. Нужна проверка владельца.') from exc
+        if until > time.time():
+            remaining = math.ceil((until - time.time()) / 60)
+            raise TelegramSendPause(f'Telegram требует паузу: ещё примерно {remaining} мин.')
+
+
+def pause_for_flood(exc):
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        path = DATA_DIR / 'send_cooldown.json'
+        until = time.time() + max(1, int(exc.seconds))
+        if path.exists():
+            until = max(until, float(json.loads(path.read_text('utf-8'))['until']))
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'until': until}), encoding='utf-8')
+        os.replace(temporary, path)
+    except (OSError, ValueError, TypeError, KeyError):
+        return TelegramSendPause('Telegram потребовал паузу. Не удалось сохранить её срок; нужна проверка владельца.')
+    return TelegramSendPause(f'Telegram потребовал паузу примерно на {math.ceil(exc.seconds / 60)} мин.')
 
 
 def load_allowed_users() -> set[int]:
@@ -1368,6 +1403,7 @@ async def send_one_prepared_message(
     """
 
     access_runtime.require_access()
+    require_send_cooldown_finished()
     inn = item["inn"]
     full_name = item["full_name"]
     username = item["username"]
@@ -1443,6 +1479,8 @@ async def send_one_prepared_message(
 
         try:
             entity = await telegram_client.get_entity(username)
+        except FloodWaitError as exc:
+            raise pause_for_flood(exc) from exc
         except Exception as exc:
             return (
                 "send_failed",
@@ -1529,6 +1567,8 @@ async def send_one_prepared_message(
         except Exception:
             pass
 
+        if isinstance(exc, FloodWaitError):
+            raise pause_for_flood(exc) from exc
         return "send_failed", error_text
 
     # This runs after peer resolution too: a revocation received while awaiting
@@ -1575,6 +1615,8 @@ async def send_one_prepared_message(
         except Exception:
             pass
 
+        if isinstance(exc, FloodWaitError):
+            raise pause_for_flood(exc) from exc
         return (
             "uncertain",
             f"{error_text}. Автоматический повтор запрещён. "
@@ -1953,6 +1995,15 @@ async def send_queue_at_time(
             try:
                 access_runtime.require_access()
                 status, details = await send_one_prepared_message(item)
+            except TelegramSendPause as exc:
+                queue['state'] = 'interrupted'
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=(str(exc) + ' Очередь остановлена, следующие получатели не обрабатываются. '
+                          'Результаты сохранены. Автоматического повтора не будет; '
+                          'после паузы нужно проверить и восстановить только неотправленные сообщения.'),
+                )
+                return
             except AccessDenied as exc:
                 queue["state"] = "interrupted"
                 await application.bot.send_message(
