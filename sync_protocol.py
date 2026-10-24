@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import zlib
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -18,6 +19,9 @@ CHUNK_BYTES = 256 * 1024
 MAX_EVENT = 64 * 1024 * 1024
 MAX_BATCH_RECORDS = 100
 MAX_BATCH_BYTES = 512 * 1024
+MAX_BATCH_PLAIN_BYTES = 8 * 1024 * 1024
+MAX_COMPRESSED_PLAIN_BYTES = MAX_BATCH_PLAIN_BYTES + 4096
+COMPRESSED_AAD = b'DVK_SYNC_V2_ZLIB'
 
 
 def b64(data):
@@ -41,31 +45,51 @@ def public_text(key):
     return b64(key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
 
 
-def derive(shared):
-    return HKDF(algorithm=SHA256(), length=32, salt=None, info=AAD).derive(shared)
+def derive(shared, aad=AAD):
+    return HKDF(algorithm=SHA256(), length=32, salt=None, info=aad).derive(shared)
 
 
-def encrypt(public, payload):
+def encrypt(public, payload, *, compress=False):
     content = canonical(payload)
-    if len(content) > MAX_PACKET // 2:
+    limit = MAX_COMPRESSED_PLAIN_BYTES if compress else MAX_PACKET // 2
+    if len(content) > limit:
         raise ValueError('Sync event exceeds size limit')
+    aad = COMPRESSED_AAD if compress else AAD
+    if compress:
+        content = zlib.compress(content)
+        if len(content) > MAX_BATCH_BYTES:
+            raise ValueError('Compressed sync packet exceeds limit')
     ephemeral = X25519PrivateKey.generate()
     peer = X25519PublicKey.from_public_bytes(base64.b64decode(public, validate=True))
     nonce = os.urandom(12)
-    encrypted = AESGCM(derive(ephemeral.exchange(peer))).encrypt(nonce, content, AAD)
-    return canonical(dict(version=1, peer=public_text(ephemeral), nonce=b64(nonce), data=b64(encrypted)))
+    encrypted = AESGCM(derive(ephemeral.exchange(peer), aad)).encrypt(nonce, content, aad)
+    return canonical(dict(version=2 if compress else 1, peer=public_text(ephemeral), nonce=b64(nonce), data=b64(encrypted)))
+
+
+def decompress_bounded(content):
+    if len(content) > MAX_BATCH_BYTES:
+        raise ValueError('Compressed sync packet exceeds limit')
+    decoder = zlib.decompressobj()
+    result = decoder.decompress(content, MAX_COMPRESSED_PLAIN_BYTES + 1)
+    if (len(result) > MAX_COMPRESSED_PLAIN_BYTES or decoder.unconsumed_tail
+            or not decoder.eof or decoder.unused_data):
+        raise ValueError('Invalid or oversized compressed sync packet')
+    return result
 
 
 def decrypt(key, packet):
     if len(packet) > MAX_PACKET:
         raise ValueError('Sync packet exceeds limit')
     wrapper = json.loads(packet)
-    if wrapper['version'] != 1:
+    if type(wrapper['version']) is not int or wrapper['version'] not in (1, 2):
         raise ValueError('Unsupported sync packet')
+    aad = COMPRESSED_AAD if wrapper['version'] == 2 else AAD
     peer = X25519PublicKey.from_public_bytes(base64.b64decode(wrapper['peer'], validate=True))
-    content = AESGCM(derive(key.exchange(peer))).decrypt(
+    content = AESGCM(derive(key.exchange(peer), aad)).decrypt(
         base64.b64decode(wrapper['nonce'], validate=True),
-        base64.b64decode(wrapper['data'], validate=True), AAD)
+        base64.b64decode(wrapper['data'], validate=True), aad)
+    if wrapper['version'] == 2:
+        content = decompress_bounded(content)
     return json.loads(content)
 
 
@@ -89,7 +113,7 @@ def batch_members(payload):
     """Validate the whole bounded batch before opening a write transaction."""
     from sync_data import TABLES
     if (not isinstance(payload, dict) or not isinstance(payload.get('installation'), str)
-            or not payload['installation'] or len(canonical(payload)) > MAX_BATCH_BYTES):
+            or not payload['installation'] or len(canonical(payload)) > MAX_BATCH_PLAIN_BYTES):
         raise ValueError('Invalid sync batch envelope')
     data = payload.get('data', {})
     if not isinstance(data, dict) or data.get('table') != 'sync_batch':
@@ -116,6 +140,11 @@ def batch_members(payload):
 def event_parts(event_id, data):
     """Stable wire IDs allow retries even if the last multipart receipt was lost."""
     raw = canonical(data)
+    if data.get('data', {}).get('table') == 'sync_batch':
+        batch_members(data)
+        if len(zlib.compress(raw)) > MAX_BATCH_BYTES - 1024:
+            raise ValueError('Compressed batch exceeds wire budget')
+        return [(event_id, data)]
     if len(raw) <= MAX_PACKET // 2:
         return [(event_id, data)]
     if len(raw) > MAX_EVENT:

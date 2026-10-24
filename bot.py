@@ -2063,7 +2063,16 @@ async def send_queue_at_time(
                 await application.bot.send_message(
                     chat_id=chat_id,
                     text=(str(exc) + ' Вся очередь остановлена, следующие получатели не обрабатываются. '
-                          'Текущий результат требует проверки; автоматического повтора нет.'),
+                          'Текущий результат требует проверки; автоматического повтора нет.\n\n'
+                          f"Итог этого запуска: всего {len(items)}.\n"
+                          f"Успешно отправлено и записано: {counts['sent']}.\n"
+                          f"Пропущено как дубли: {counts['duplicate']}.\n"
+                          f"Ошибки до отправки: {counts['send_failed']}.\n"
+                          f"Предыдущие неопределённые результаты: {counts['uncertain']}.\n"
+                          f"Предыдущие результаты с ошибкой сохранения или требующие проверки: "
+                          f"{sum(counts[k] for k in ('sent_db_save_failed', 'sent_db_update_failed', 'persistence_failed', 'manual_review'))}.\n"
+                          f"Текущая остановленная запись: {index}/{len(items)}.\n"
+                          f"Следующих получателей не обрабатывали: {len(items) - index}."),
                 )
                 return
             except TelegramSendPause as exc:

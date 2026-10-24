@@ -83,7 +83,8 @@ async def start(client):
                     continue
                 event_ids, event_id, data = transfer
                 for wire_id, wire_data in event_parts(event_id, data):
-                    packet = encrypt(encryption, dict(subject=subject, event_id=wire_id, data=wire_data))
+                    packet = encrypt(encryption, dict(subject=subject, event_id=wire_id, data=wire_data),
+                                     compress=wire_data['data']['table'] == 'sync_batch')
                     stream = io.BytesIO(packet)
                     stream.name = 'encrypted.dvk'
                     async with transport_lock:

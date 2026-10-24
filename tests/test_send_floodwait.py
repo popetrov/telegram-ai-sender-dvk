@@ -26,6 +26,22 @@ class FloodWaitTests(unittest.IsolatedAsyncioTestCase):
                          product='test',final_message='saved text',prompt_file='test.md',
                          prompt_text='saved prompt',model='test',raw_result='saved',prepared_message_id=1)
 
+    async def test_spam_stop_reports_progress_and_never_attempts_next_recipient(self):
+        queue = dict(send_at=datetime.now().astimezone(), state='scheduled', chat_id=42,
+                     items=[dict(self.item,prepared_message_id=n) for n in (1,2,3)])
+        app = SimpleNamespace(bot_data={bot.QUEUE_KEY:queue},bot=SimpleNamespace(send_message=AsyncMock()))
+        with patch('access_runtime.require_access'), patch('schedule_state.save'), \
+             patch('bot.asyncio.sleep',new_callable=AsyncMock), \
+             patch('bot.send_one_prepared_message',new_callable=AsyncMock,
+                   side_effect=[('sent','saved'),bot.TelegramSpamPause('PeerFloodError')]) as send:
+            await bot.send_queue_at_time(app,queue)
+        self.assertEqual(send.await_count,2)
+        self.assertEqual(queue['state'],'interrupted')
+        summary = app.bot.send_message.call_args.kwargs['text']
+        self.assertIn('Успешно отправлено и записано: 1.',summary)
+        self.assertIn('Текущая остановленная запись: 2/3.',summary)
+        self.assertIn('Следующих получателей не обрабатывали: 1.',summary)
+
     async def test_resolver_limit_stops_queue_before_next_recipient(self):
         items=[self.item,dict(self.item,prepared_message_id=2,username='next')]
         queue=dict(send_at=datetime.now().astimezone(),state='scheduled',chat_id=42,items=items)

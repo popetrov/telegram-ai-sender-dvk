@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import zlib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -15,6 +16,7 @@ for name,value in dict(TELEGRAM_API_ID='12345',TELEGRAM_API_HASH='test',OPENAI_A
 from authority_store import AuthorityStore
 from sync_data import enqueue, next_transfer
 from sync_protocol import (MAX_BATCH_BYTES, MAX_BATCH_RECORDS, batch_members, event_digest,
+                           MAX_BATCH_PLAIN_BYTES, MAX_COMPRESSED_PLAIN_BYTES, decompress_bounded,
                            encrypt, decrypt, receipt, public_text, event_parts)
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
@@ -57,7 +59,7 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(batch_members(data)),MAX_BATCH_RECORDS)
         self.assertEqual(wire_id,event_digest(data)[:32])
         self.db.execute('DELETE FROM sync_outbox')
-        self.add(2,'x'*(MAX_BATCH_BYTES//2))
+        self.add(2,'x'*(MAX_BATCH_PLAIN_BYTES//2))
         ids,wire_id,data=next_transfer(self.db)
         self.assertEqual(len(ids),1)
         self.assertEqual(data['data']['table'],'messages')
@@ -82,6 +84,40 @@ class BatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r['company_id'],'dvk')
             self.assertEqual(r['subject'],'manager:42')
             self.assertEqual(r['digest'],event_digest(json.loads(r['payload'])))
+
+    def test_large_compressible_batch_uses_one_small_authenticated_packet(self):
+        self.add(100, 'analysis paragraph ' * 1500)
+        ids, wire_id, data = next_transfer(self.db)
+        self.assertEqual(len(ids), 100)
+        self.assertEqual(len(event_parts(wire_id, data)), 1)
+        key = X25519PrivateKey.generate()
+        payload = dict(subject='manager:42', event_id=wire_id, data=data)
+        packet = encrypt(public_text(key), payload, compress=True)
+        self.assertEqual(json.loads(packet)['version'], 2)
+        self.assertLess(len(packet), MAX_BATCH_BYTES)
+        self.assertEqual(decrypt(key, packet), payload)
+        self.receive((ids, wire_id, data))
+        self.assertEqual(self.count(), 100)
+        wrapper = json.loads(packet)
+        wrapper['version'] = 1
+        with self.assertRaises(Exception):
+            decrypt(key, json.dumps(wrapper).encode())
+
+    def test_decompression_rejects_bombs_truncation_and_trailing_data(self):
+        for content in (zlib.compress(b'x' * (MAX_COMPRESSED_PLAIN_BYTES + 1)),
+                        zlib.compress(b'{}')[:-1], zlib.compress(b'{}') + b'trailing'):
+            with self.assertRaises(ValueError):
+                decompress_bounded(content)
+
+    def test_incompressible_batches_shrink_without_losing_events(self):
+        self.add(20, base64.b64encode(os.urandom(70000)).decode())
+        ids, wire_id, data = next_transfer(self.db)
+        self.assertGreater(len(ids), 1)
+        self.assertLess(len(ids), 20)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM sync_outbox').fetchone()[0], 20)
+        key = X25519PrivateKey.generate()
+        packet = encrypt(public_text(key), dict(subject='manager:42',event_id=wire_id,data=data), compress=True)
+        self.assertEqual(decrypt(key, packet)['data'], data)
 
     def test_conflicting_member_rolls_back_entire_batch(self):
         self.add()

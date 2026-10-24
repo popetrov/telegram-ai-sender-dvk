@@ -44,20 +44,27 @@ def next_event(db):
 
 def next_transfer(db):
     """Pack consecutive pending events; oversized single events keep fragmentation."""
-    from sync_protocol import MAX_BATCH_RECORDS, MAX_BATCH_BYTES, event_digest
+    from sync_protocol import MAX_BATCH_RECORDS, MAX_BATCH_BYTES, MAX_BATCH_PLAIN_BYTES, event_digest
+    import zlib
     from access_lease import canonical
     installation = db.execute("SELECT value FROM local_settings WHERE key='sync_installation_id'").fetchone()[0]
     events = []
     envelope = dict(installation=installation, data=dict(table='sync_batch', row=dict(events=events)))
+    size = len(canonical(envelope))
     for row in db.execute('SELECT event_id,payload FROM sync_outbox ORDER BY sequence LIMIT ?', (MAX_BATCH_RECORDS,)):
         event = dict(event_id=row['event_id'], data=json.loads(row['payload']))
         events.append(event)
-        if len(canonical(envelope)) > MAX_BATCH_BYTES:
+        size += len(canonical(event)) + (1 if len(events) > 1 else 0)
+        if size > MAX_BATCH_PLAIN_BYTES:
             events.pop()
             if not events:
                 single = dict(installation=installation, data=event['data'])
                 return [event['event_id']], event['event_id'], single
             break
+    # Keep room for the authenticated subject/event envelope. Shrinking preserves
+    # order and never drops an outbox event, even for incompressible analyses.
+    while len(events) > 1 and len(zlib.compress(canonical(envelope))) > MAX_BATCH_BYTES - 1024:
+        del events[(len(events) + 1) // 2:]
     if not events:
         return None
     if len(events) == 1:
