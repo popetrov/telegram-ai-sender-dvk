@@ -27,6 +27,7 @@ RUNTIME = {
     "sync_data.py", "sync_protocol.py", "sync_runtime.py", "file_lock.py",
     "manager_setup.py", "DATA_POLICY.md", "schedule_state.py", "platform_updater.py",
     "PILOT.md", "PROJECT_AUDIT.md", "startup_update.py", "transition_setup.py", "STARTUP_UPDATES.md",
+    "spam_monitor.py",
 }
 MAX_BYTES = 64 * 1024 * 1024
 MISSING = object()

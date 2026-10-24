@@ -152,6 +152,7 @@ async def main():
         print('Найдена прерванная очередь. Проверьте /queue; автоматическая отправка не возобновляется.')
     access_task = None
     sync_task = None
+    spam_task = None
 
     try:
         await ensure_telegram_authorized()
@@ -168,6 +169,10 @@ async def main():
         await bot.initialize()
         await bot.start()
         await bot.updater.start_polling()
+        import spam_monitor
+        async def notify_spam(text):
+            await bot.bot.send_message(chat_id=access_runtime.account_id,text=text)
+        spam_task = await spam_monitor.start(client,notify_spam)
 
         try:
             await wait_for_safe_update(bot)
@@ -181,6 +186,7 @@ async def main():
             await bot.shutdown()
 
     finally:
+        await access_runtime.stop(spam_task)
         await access_runtime.stop(access_task)
         await access_runtime.stop(sync_task)
         await disconnect()
