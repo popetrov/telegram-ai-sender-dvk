@@ -21,7 +21,7 @@ from telegram.ext import (
 )
 
 import config
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, PeerFloodError
 from ai import (
     extract_message_from_markers,
     generate_company_analysis,
@@ -65,7 +65,30 @@ class TelegramSendPause(RuntimeError):
     """Stop the whole queue; never turn a rate limit into a per-client loop."""
 
 
+class TelegramSpamPause(TelegramSendPause):
+    """Account restriction has no known expiry; only an explicit owner reset clears it."""
+
+
+_spam_stops_in_memory = set()
+
+
+def pause_for_spam():
+    path = DATA_DIR / 'send_spam_block.json'
+    _spam_stops_in_memory.add(path.resolve())
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'blocked': True, 'detected_at': time.time()}), encoding='utf-8')
+        os.replace(temporary, path)
+    except OSError:
+        return TelegramSpamPause('Telegram ограничил аккаунт (PeerFloodError). Не удалось сохранить блокировку; нужна проверка владельца.')
+    return TelegramSpamPause('Telegram ограничил аккаунт (PeerFloodError). Срок не указан. Проверьте @SpamBot; перезапуск не снимает локальную блокировку отправки.')
+
+
 def require_send_cooldown_finished():
+    spam = DATA_DIR / 'send_spam_block.json'
+    if spam.exists() or spam.resolve() in _spam_stops_in_memory:
+        raise TelegramSpamPause('Отправка заблокирована после PeerFloodError. Сначала проверьте ограничение через @SpamBot. После проверки используйте /spam_reset.')
     path = DATA_DIR / 'send_cooldown.json'
     if path.exists():
         try:
@@ -1493,6 +1516,8 @@ async def send_one_prepared_message(
             entity = await telegram_client.get_entity(username)
         except FloodWaitError as exc:
             raise pause_for_flood(exc) from exc
+        except PeerFloodError as exc:
+            raise pause_for_spam() from exc
         except Exception as exc:
             return (
                 "send_failed",
@@ -1581,6 +1606,8 @@ async def send_one_prepared_message(
 
         if isinstance(exc, FloodWaitError):
             raise pause_for_flood(exc) from exc
+        if isinstance(exc, PeerFloodError):
+            raise pause_for_spam() from exc
         return "send_failed", error_text
 
     # This runs after peer resolution too: a revocation received while awaiting
@@ -1629,6 +1656,8 @@ async def send_one_prepared_message(
 
         if isinstance(exc, FloodWaitError):
             raise pause_for_flood(exc) from exc
+        if isinstance(exc, PeerFloodError):
+            raise pause_for_spam() from exc
         return (
             "uncertain",
             f"{error_text}. Автоматический повтор запрещён. "
@@ -1681,6 +1710,24 @@ async def send_one_prepared_message(
         f"Сообщение отправлено @{username}; "
         f"Telegram message ID: {sent_message.id}.",
     )
+
+
+async def spam_reset_command(update, context):
+    if not user_is_allowed(update):
+        return
+    if context.args != ['ПРОВЕРЕНО']:
+        await update.effective_message.reply_text(
+            'Сначала проверьте аккаунт через @SpamBot. Только после проверки снятия ограничения '
+            'отправьте /spam_reset ПРОВЕРЕНО. Это снимет лишь локальную остановку программы, '
+            'не ограничение Telegram. Очередь сама не запустится.')
+        return
+    path = DATA_DIR / 'send_spam_block.json'
+    path.unlink(missing_ok=True)
+    _spam_stops_in_memory.discard(path.resolve())
+    await update.effective_message.reply_text(
+        'Локальная остановка после PeerFloodError снята по вашему подтверждению. '
+        'Записи и очередь не изменены, отправка не запущена. '
+        'Перед восстановлением проверьте результаты; при новом PeerFloodError очередь снова остановится.')
 
 
 async def queue_command(
@@ -2011,6 +2058,14 @@ async def send_queue_at_time(
             try:
                 access_runtime.require_access()
                 status, details = await send_one_prepared_message(item)
+            except TelegramSpamPause as exc:
+                queue['state'] = 'interrupted'
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=(str(exc) + ' Вся очередь остановлена, следующие получатели не обрабатываются. '
+                          'Текущий результат требует проверки; автоматического повтора нет.'),
+                )
+                return
             except TelegramSendPause as exc:
                 queue['state'] = 'interrupted'
                 await application.bot.send_message(
@@ -2129,6 +2184,7 @@ def create_bot() -> Application:
     ).build()
 
     application.add_handler(CommandHandler("access", access_status_command))
+    application.add_handler(CommandHandler('spam_reset', spam_reset_command))
     application.add_handler(
         CommandHandler("start", start_command)
     )

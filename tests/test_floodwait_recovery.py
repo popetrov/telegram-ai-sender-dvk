@@ -4,6 +4,8 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock,patch
+from datetime import datetime
+from telethon.errors import PeerFloodError
 
 for name,value in dict(TELEGRAM_API_ID='12345',TELEGRAM_API_HASH='test',OPENAI_API_KEY='test',
                        BOT_TOKEN='123:test',MANAGER_ID='test').items():
@@ -87,3 +89,47 @@ class FloodWaitRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await bot.queue_command(update,context)
         self.assertEqual(len(context.application.bot_data[bot.QUEUE_KEY]['items']),1)
         self.assertIn('FloodWait): 1',update.effective_message.reply_text.call_args.args[0])
+
+    async def test_peerflood_stops_after_one_attempt_preserves_result_and_blocks_restart(self):
+        item=bot.item_from_saved_record(database.get_pending_prepared_messages()[0])
+        next_item={**item,'username':'next_recipient'}
+        queue=dict(send_at=datetime.now().astimezone(),state='scheduled',chat_id=42,items=[item,next_item])
+        app=SimpleNamespace(bot_data={bot.QUEUE_KEY:queue},bot=SimpleNamespace(send_message=AsyncMock()))
+        with patch('access_runtime.require_access'), \
+             patch.object(bot.telegram_client,'get_entity',new_callable=AsyncMock,return_value=SimpleNamespace(id=101)) as resolve, \
+             patch.object(bot.telegram_client,'send_message',new_callable=AsyncMock,side_effect=PeerFloodError(request=None)) as send, \
+             patch('schedule_state.save'):
+            await bot.send_queue_at_time(app,queue)
+        self.assertEqual(send.await_count,1);self.assertEqual(resolve.await_count,1)
+        self.assertEqual(queue['state'],'interrupted')
+        self.assertEqual(next_item['prepared_status'],'manual_review')
+        with database.get_connection() as db:
+            prepared=db.execute('SELECT status,send_error FROM prepared_messages WHERE id=?',(self.prepared,)).fetchone()
+            self.assertEqual(prepared['status'],'uncertain')
+            self.assertTrue(prepared['send_error'].startswith('PeerFloodError:'))
+        bot._spam_stops_in_memory.discard((self.root/'send_spam_block.json').resolve())
+        with patch('bot.time.time',return_value=10**12),patch('access_runtime.require_access'):
+            with self.assertRaises(bot.TelegramSpamPause):
+                await bot.send_one_prepared_message(next_item)
+        self.assertTrue(any('@SpamBot' in c.kwargs.get('text','') for c in app.bot.send_message.call_args_list))
+
+    async def test_local_spam_reset_requires_owner_and_explicit_confirmation_and_never_sends(self):
+        bot.pause_for_spam()
+        path=self.root/'send_spam_block.json'
+        update=SimpleNamespace(effective_message=SimpleNamespace(reply_text=AsyncMock()))
+        with patch('bot.user_is_allowed',return_value=False):
+            await bot.spam_reset_command(update,SimpleNamespace(args=['ПРОВЕРЕНО']))
+        self.assertTrue(path.exists())
+        with patch('bot.user_is_allowed',return_value=True), \
+             patch.object(bot.telegram_client,'send_message',new_callable=AsyncMock) as send:
+            await bot.spam_reset_command(update,SimpleNamespace(args=[]))
+            self.assertTrue(path.exists())
+            await bot.spam_reset_command(update,SimpleNamespace(args=['ПРОВЕРЕНО']))
+            self.assertFalse(path.exists());bot.require_send_cooldown_finished()
+            send.assert_not_awaited()
+
+    async def test_failed_spam_state_write_still_stops_current_process(self):
+        with patch('pathlib.Path.write_text',side_effect=OSError('disk unavailable')):
+            self.assertIsInstance(bot.pause_for_spam(),bot.TelegramSpamPause)
+        with self.assertRaises(bot.TelegramSpamPause):
+            bot.require_send_cooldown_finished()
