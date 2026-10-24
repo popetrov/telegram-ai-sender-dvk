@@ -51,6 +51,7 @@ DATA_DIR = Path("data")
 MAX_EXCEL_SIZE_BYTES = 20 * 1024 * 1024
 MAX_ROWS_PER_IMPORT = 500
 MAX_PARALLEL_RESEARCH = 10
+SEND_INTERVAL_SECONDS = 10
 
 REQUIRED_COLUMNS = ["Юзернейм", "Продукт"]
 
@@ -2043,7 +2044,7 @@ async def send_queue_at_time(
                 pass
 
             if index < len(items):
-                await asyncio.sleep(2)
+                await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
         summary = (
             "Отправка очереди завершена.\n\n"
