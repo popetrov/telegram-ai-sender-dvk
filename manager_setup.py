@@ -10,6 +10,18 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
 
+def validate_existing_number(current):
+    """Preserve numbered legacy identities; never silently create another session."""
+    import re
+    manager=str(current.get('MANAGER_ID') or '').strip()
+    numbered=re.fullmatch(r'(?:manager[_-]?)?([0-9]{1,12})',manager,re.I)
+    if numbered:
+        session=str(current.get('SESSION_NAME') or '').strip().removesuffix('.session')
+        suffix=re.search(r'([0-9]+)$',session)
+        if not suffix or suffix[1]!=numbered[1]:
+            raise ValueError('Номер MANAGER_ID не совпадает с окончанием SESSION_NAME. Настройки не изменены; нужна проверка владельца.')
+
+
 def configure_center(path, public):
     from file_lock import FileLock
     import re
@@ -26,6 +38,7 @@ def configure_center(path, public):
         current = dotenv_values(path)
         if not current.get('MANAGER_ID','').strip():
             raise ValueError('В старой установке не задан MANAGER_ID; требуется локальная проверка')
+        validate_existing_number(current)
         values = dict(ACCESS_BOT_USERNAME=service,ACCESS_PUBLIC_KEY=public['access_public_key'],
                       SYNC_PUBLIC_KEY=public['sync_public_key'])
         for name in ('ACCESS_PUBLIC_KEY','SYNC_PUBLIC_KEY'):

@@ -37,6 +37,7 @@ assert.equal(invoke(profile).ok,true);assert.equal(rows.length,2);
 assert.equal(invoke({...profile,full_name:'Updated Name',revision:2}).ok,true);
 assert.equal(invoke(profile).ok,true);assert.equal(rows[1][0],'Updated Name');assert.equal(rows[1][5],'2');
 assert.equal(invoke({...profile,account_id:43}).ok,false);assert.equal(rows.length,2);
+assert.equal(invoke({...profile,number:'007',revision:3}).ok,false);assert.equal(rows[1][1],'001');
 const before=JSON.stringify(rows);
 assert.equal(invoke({...profile,full_name:'Intruder'},false).ok,false);assert.equal(JSON.stringify(rows),before);
 assert.equal(invoke({...profile,account_id:44,full_name:'=IMPORTXML("x")',number:'002'}).ok,true);

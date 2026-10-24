@@ -10,6 +10,12 @@ PROMPTS=('Введите ФИО для внутренней таблицы:',
          'Введите название компании для таблицы, например ДВК:')
 
 
+def identity_number(subject):
+    manager=subject.rsplit(':',1)[0]
+    match=re.fullmatch(r'(?:manager[_-]?)?([0-9]{1,12})',manager,re.I)
+    return match[1] if match else None
+
+
 def clean(field,value):
     value=value.strip()
     if not value or len(value)>120 or any(ord(c)<32 for c in value):
@@ -41,13 +47,20 @@ class ManagerDirectory:
 
     def begin(self,admin_id,account_id):
         with self.store.connection() as db:
-            if not db.execute('SELECT 1 FROM managers WHERE account_id=? AND company_id IS NOT NULL',
-                              (account_id,)).fetchone():
+            manager=db.execute('SELECT subject FROM managers WHERE account_id=? AND company_id IS NOT NULL',
+                               (account_id,)).fetchone()
+            if not manager:
                 raise ValueError('Сначала выдайте доступ: /approve ID КОМПАНИЯ')
+            existing=db.execute('SELECT number FROM manager_directory WHERE account_id=?',(account_id,)).fetchone()
+            number=identity_number(manager['subject'])
+            if existing and number and existing['number']!=number:
+                raise ValueError('Номер карточки не совпадает с существующим MANAGER_ID. Автоматическое изменение запрещено.')
+            number=number or (existing['number'] if existing else None)
+            fields={'number':number} if number else {}
             db.execute('INSERT INTO directory_drafts VALUES (?,?,0,?) ON CONFLICT(admin_id) '
                        'DO UPDATE SET account_id=excluded.account_id,step=0,fields=excluded.fields',
-                       (admin_id,account_id,'{}'))
-        return PROMPTS[0]
+                       (admin_id,account_id,json.dumps(fields)))
+        return ((f'Существующий номер {number} сохранён и не изменяется.\n' if number else '')+PROMPTS[0])
 
     def cancel(self,admin_id):
         with self.store.connection() as db:
@@ -61,14 +74,20 @@ class ManagerDirectory:
             fields=json.loads(row['fields']);step=row['step']
             fields[FIELDS[step]]=clean(FIELDS[step],text)
             if step<3:
+                next_step=2 if step==0 and 'number' in fields else step+1
                 db.execute('UPDATE directory_drafts SET step=?,fields=? WHERE admin_id=?',
-                           (step+1,json.dumps(fields,ensure_ascii=False),admin_id))
-                return PROMPTS[step+1]
+                           (next_step,json.dumps(fields,ensure_ascii=False),admin_id))
+                return PROMPTS[next_step]
+            manager=db.execute('SELECT subject FROM managers WHERE account_id=?',(row['account_id'],)).fetchone()
+            existing=db.execute('SELECT number FROM manager_directory WHERE account_id=?',(row['account_id'],)).fetchone()
+            locked=identity_number(manager['subject']) or (existing['number'] if existing else None)
+            if locked and fields['number']!=locked:
+                raise ValueError('Изменение существующего номера запрещено. /cancel и /profile ID для проверки.')
             try:
                 db.execute('''INSERT INTO manager_directory
                     (account_id,full_name,number,department,company_name,revision)
                     VALUES (?,?,?,?,?,1) ON CONFLICT(account_id) DO UPDATE SET
-                    full_name=excluded.full_name,number=excluded.number,
+                    full_name=excluded.full_name,
                     department=excluded.department,company_name=excluded.company_name,
                     revision=manager_directory.revision+1''',
                     (row['account_id'],*(fields[f] for f in FIELDS)))

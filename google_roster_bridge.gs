@@ -69,6 +69,7 @@ function doPost(e) {
     }
     if (ids.length > 1 || numbers.length > 1) throw Error('duplicate');
     let row = ids.length ? ids[0] : -1;
+    if (row !== -1 && data[row][1] !== p.number) throw Error('immutable_number');
     if (numbers.length && numbers[0] !== row) {
       const existing = numbers[0];
       if (row !== -1 || data[existing][4] || data[existing][0].trim() !== p.full_name.trim()) throw Error('conflict');

@@ -25,8 +25,9 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
         self.directory=ManagerDirectory(self.store)
 
     def fill(self,account=42,number='001'):
-        self.directory.begin(99,account)
-        for value in ('Private Name',number,'Private Direction','Private Company'):
+        prompt=self.directory.begin(99,account)
+        values=('Private Name','Private Direction','Private Company') if 'Существующий номер' in prompt else ('Private Name',number,'Private Direction','Private Company')
+        for value in values:
             result=self.directory.answer(99,value)
         return result
 
@@ -52,6 +53,34 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError): self.directory.answer(99,'Company')
         self.assertIsNone(self.directory.profile(43))
         self.assertEqual(self.directory.profile(42)['full_name'],'Private Name')
+
+    def test_legacy_007_is_taken_from_manager_id_and_cannot_be_renumbered(self):
+        self.store.register(47,'manager_007:47');self.store.assign(47,'dvk')
+        prompt=self.directory.begin(99,47)
+        self.assertIn('007',prompt)
+        prompt=self.directory.answer(99,'Супрунова Александра')
+        self.assertIn('направление',prompt)
+        self.directory.answer(99,'Право');self.directory.answer(99,'ДВК')
+        self.assertEqual(self.directory.profile(47)['number'],'007')
+        self.directory.begin(99,47)
+        self.directory.answer(99,'Супрунова Александра')
+        self.directory.answer(99,'Право')
+        with self.store.connection() as db:
+            row=db.execute('SELECT fields FROM directory_drafts WHERE admin_id=99').fetchone()
+            fields=json.loads(row['fields']);fields['number']='008'
+            db.execute('UPDATE directory_drafts SET fields=? WHERE admin_id=99',(json.dumps(fields),))
+        with self.assertRaises(ValueError): self.directory.answer(99,'ДВК')
+        self.assertEqual(self.directory.profile(47)['number'],'007')
+        self.assertEqual(next(r for r in self.store.list_managers() if r['account_id']==47)['subject'],'manager_007:47')
+
+    def test_numbered_session_must_match_and_valid_configuration_is_not_modified(self):
+        from manager_setup import validate_existing_number
+        original=dict(MANAGER_ID='manager_007',SESSION_NAME='telegram_sender_007')
+        current=dict(original);validate_existing_number(current)
+        self.assertEqual(current,original)
+        for session in ('telegram_sender_008','telegram_sender_7','telegram_sender'):
+            with self.assertRaises(ValueError):
+                validate_existing_number(dict(MANAGER_ID='manager_007',SESSION_NAME=session))
 
     async def test_admin_only_wizard_and_service_lease_never_contains_directory(self):
         app=create_server('123:test',99,Ed25519PrivateKey.generate(),self.store,
