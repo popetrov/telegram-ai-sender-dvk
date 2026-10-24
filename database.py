@@ -591,6 +591,76 @@ def save_processed_client(
         return client_id, research_run_id, message_id
 
 
+def verified_floodwait_source(connection, manager_id, prepared):
+    """Prove a resolver rejection against history, not just a label in the UI."""
+    error=str(prepared['send_error'] or '')
+    if (prepared['manager_id']!=manager_id or prepared['status']!='manual_review'
+            or not error.startswith('FloodWaitError:') or 'ResolveUsernameRequest' not in error
+            or 'Сообщение не отправлялось.' not in error):
+        return None
+    clients=connection.execute('''SELECT * FROM clients WHERE manager_id=?
+        AND (inn=? OR lower(ltrim(username,'@'))=?)''',
+        (manager_id,normalize_inn(prepared['inn']),normalize_username(prepared['username']))).fetchall()
+    if len(clients)!=1:
+        return None
+    client=clients[0]
+    if client['status']!='manual_review' or client['product']!=prepared['product']:
+        return None
+    messages=connection.execute('SELECT * FROM messages WHERE client_id=? ORDER BY id DESC',
+                                (client['id'],)).fetchall()
+    if not messages:
+        return None
+    latest=messages[0]
+    if (latest['status']!='not_sent' or latest['send_error']!=error
+            or latest['text']!=prepared['final_message']):
+        return None
+    if not connection.execute('SELECT 1 FROM research_runs WHERE id=? AND client_id=? AND final_message=?',
+                              (latest['research_run_id'],client['id'],prepared['final_message'])).fetchone():
+        return None
+    for message in messages:
+        if message['status']=='not_sent':
+            continue
+        if message['status']=='uncertain' and str(message['send_error'] or '').startswith('PeerFloodError:'):
+            continue
+        return None  # Any sent, sending or unexplained outcome needs review.
+    others=connection.execute('''SELECT status,send_error FROM prepared_messages WHERE manager_id=? AND id!=?
+        AND (inn=? OR lower(ltrim(username,'@'))=?)''',
+        (manager_id,prepared['id'],normalize_inn(prepared['inn']),normalize_username(prepared['username']))).fetchall()
+    if any(r['status'] in ('sent','sending') or (r['status']=='uncertain'
+               and not str(r['send_error'] or '').startswith('PeerFloodError:')) for r in others):
+        return None
+    return client,latest
+
+
+def start_floodwait_retry(*, prepared_message_id, inn, full_name, username, product,
+                         prompt_file, prompt_text, model, raw_result, final_message):
+    """One atomic claim of an explicitly unsent message; reuse its original analysis."""
+    with get_connection() as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        manager_id=_verify_manager_id(connection)
+        prepared=connection.execute('SELECT * FROM prepared_messages WHERE id=? AND manager_id=?',
+                                    (prepared_message_id,manager_id)).fetchone()
+        if prepared is None:
+            raise ValueError('Сохранённое сообщение не найдено.')
+        if (normalize_inn(inn)!=normalize_inn(prepared['inn'])
+                or normalize_username(username)!=normalize_username(prepared['username'])
+                or product!=prepared['product'] or final_message!=prepared['final_message']):
+            raise ValueError('Содержимое не совпадает с сохранённым сообщением.')
+        source=verified_floodwait_source(connection,manager_id,prepared)
+        if source is None:
+            raise ValueError('История не подтверждает, что сообщение точно не отправлено. Нужна ручная проверка.')
+        client,latest=source
+        now=utc_now()
+        cursor=connection.execute('''INSERT INTO messages
+            (client_id,research_run_id,text,status,created_at) VALUES (?,?,?,'sending',?)''',
+            (client['id'],latest['research_run_id'],prepared['final_message'],now))
+        message_id=int(cursor.lastrowid)
+        connection.execute("UPDATE clients SET status='sending',updated_at=? WHERE id=?",(now,client['id']))
+        connection.execute("UPDATE prepared_messages SET status='sending',send_error=NULL,updated_at=? WHERE id=?",
+                           (now,prepared_message_id))
+        return int(client['id']),latest['research_run_id'],message_id
+
+
 def start_peerflood_retry(
     prepared_message_id: int,
     inn: str,
@@ -1169,8 +1239,8 @@ def get_all_prepared_messages() -> list[dict]:
 
 def get_pending_prepared_messages() -> list[dict]:
     """
-    Возвращает новые подготовленные сообщения и сообщения,
-    отклонённые с явным PeerFloodError.
+    Возвращает prepared, явные PeerFloodError и подтверждённые
+    историей отказы FloodWait на стадии поиска получателя.
 
     Остальные uncertain, sent и sending не восстанавливаются.
     """
@@ -1189,10 +1259,12 @@ def get_pending_prepared_messages() -> list[dict]:
                       status = 'uncertain'
                       AND send_error LIKE 'PeerFloodError:%'
                   )
+                  OR (status = 'manual_review' AND send_error LIKE 'FloodWaitError:%')
               )
             ORDER BY id
             """,
             (manager_id,),
         ).fetchall()
 
-    return [dict(row) for row in rows]
+        return [dict(row) for row in rows if row['status']!='manual_review'
+                or verified_floodwait_source(connection,manager_id,row) is not None]

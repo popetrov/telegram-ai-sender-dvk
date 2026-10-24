@@ -37,6 +37,7 @@ from database import (
     save_prepared_message,
     save_processed_client,
     start_peerflood_retry,
+    start_floodwait_retry,
     update_client_status,
     update_message_status,
     update_prepared_message_status,
@@ -592,6 +593,12 @@ def is_peerflood_retry(item: dict) -> bool:
             "PeerFloodError:"
         )
     )
+
+
+def is_floodwait_retry(item: dict) -> bool:
+    error=str(item.get('send_error') or '')
+    return (item.get('prepared_status')=='manual_review' and error.startswith('FloodWaitError:')
+            and 'ResolveUsernameRequest' in error and 'Сообщение не отправлялось.' in error)
 
 
 def make_prepared_item(
@@ -1400,7 +1407,8 @@ async def send_one_prepared_message(
 ) -> tuple[str, str]:
     """
     PeerFloodError допускается к единственной контролируемой попытке
-    восстановления. Остальные uncertain-записи не отправляются.
+    восстановления. Resolver-FloodWait допускается только после проверки
+    истории в SQLite. Остальные uncertain-записи не отправляются.
     """
 
     access_runtime.require_access()
@@ -1412,21 +1420,24 @@ async def send_one_prepared_message(
     final_message = item["final_message"]
 
     peerflood_retry = is_peerflood_retry(item)
+    floodwait_retry = is_floodwait_retry(item)
 
     if (
         item.get("prepared_status") != "prepared"
         and not peerflood_retry
+        and not floodwait_retry
     ):
         return (
             "manual_review",
             "Запись не имеет статуса prepared или явно подтверждённого "
-            "PeerFloodError. Отправка запрещена.",
+            "PeerFloodError или проверенного отказа FloodWait до отправки. Отправка запрещена.",
         )
 
-    if peerflood_retry:
+    if peerflood_retry or floodwait_retry:
         try:
+            start_retry = start_floodwait_retry if floodwait_retry else start_peerflood_retry
             client_id, research_run_id, message_id = (
-                start_peerflood_retry(
+                start_retry(
                     prepared_message_id=int(
                         item["prepared_message_id"]
                     ),
@@ -1445,7 +1456,7 @@ async def send_one_prepared_message(
             return (
                 "persistence_failed",
                 "Не удалось безопасно перевести исходную запись "
-                "PeerFloodError в повторную отправку. "
+                "после отказа Telegram в повторную отправку. "
                 "Сообщение не отправлялось.\n"
                 f"{type(exc).__name__}: {exc}",
             )
@@ -1716,7 +1727,8 @@ async def queue_command(
                 ).startswith("PeerFloodError:")
             )
 
-            if status != "prepared" and not explicit_peerflood:
+            explicit_floodwait = is_floodwait_retry({**row_dict, 'prepared_status': status})
+            if status != "prepared" and not explicit_peerflood and not explicit_floodwait:
                 continue
 
             item = item_from_saved_record(row_dict)
@@ -1735,7 +1747,7 @@ async def queue_command(
         await update.effective_message.reply_text(
             "В SQLite нет сообщений, разрешённых к восстановлению.\n"
             "Статусы uncertain без явного PeerFloodError, sent, "
-            "sending и manual_review не добавляются."
+            "sending и непроверенные manual_review не добавляются."
         )
         return
 
@@ -1753,12 +1765,14 @@ async def queue_command(
     peerflood_count = sum(
         1 for item in items if is_peerflood_retry(item)
     )
+    floodwait_count = sum(1 for item in items if is_floodwait_retry(item))
 
     await update.effective_message.reply_text(
         "Очередь восстановлена из SQLite.\n\n"
         f"Всего сообщений: {len(items)}\n"
         f"Из них с явным PeerFloodError: {peerflood_count}\n"
-        f"Обычных prepared: {len(items) - peerflood_count}\n"
+        f"Точно не отправлены при поиске (FloodWait): {floodwait_count}\n"
+        f"Обычных prepared: {len(items) - peerflood_count - floodwait_count}\n"
         "Исходные сохранённые тексты не изменены.\n"
         "GPT повторно не вызывается.\n\n"
         "Перед подтверждением проверьте, что ограничение Telegram "
@@ -1990,6 +2004,7 @@ async def send_queue_at_time(
             if (
                 item.get("prepared_status") != "prepared"
                 and not is_peerflood_retry(item)
+                and not is_floodwait_retry(item)
             ):
                 continue
 
