@@ -153,6 +153,7 @@ async def main():
     access_task = None
     sync_task = None
     spam_task = None
+    dialogue_task = None
 
     try:
         await ensure_telegram_authorized()
@@ -173,6 +174,15 @@ async def main():
         async def notify_spam(text):
             await bot.bot.send_message(chat_id=access_runtime.account_id,text=text)
         spam_task = await spam_monitor.start(client,notify_spam)
+        try:
+            import dialogue_runtime
+            dialogue_task = await dialogue_runtime.start(client,bot)
+        except Exception as exc:
+            print('Автодиалоги не включены ('+type(exc).__name__+'). Первая часть продолжает работать.',flush=True)
+            try:
+                await notify_spam('Автодиалоги не включены. Проверьте настройку второй части; первая часть продолжает работать.')
+            except Exception:
+                pass
 
         try:
             await wait_for_safe_update(bot)
@@ -186,6 +196,7 @@ async def main():
             await bot.shutdown()
 
     finally:
+        await access_runtime.stop(dialogue_task)
         await access_runtime.stop(spam_task)
         await access_runtime.stop(access_task)
         await access_runtime.stop(sync_task)

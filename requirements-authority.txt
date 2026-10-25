@@ -2,3 +2,4 @@ python-dotenv==1.2.4
 python-telegram-bot==22.6
 cryptography==50.0.0
 tzdata==2026.5
+openai==3.26.1

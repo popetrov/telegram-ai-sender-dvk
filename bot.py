@@ -43,6 +43,7 @@ from database import (
     update_prepared_message_status,
 )
 from telegram_client import client as telegram_client
+from dialogue_store import require_contact_allowed, ContactOptOutError
 
 
 ALLOWED_USERS_FILE = Path("data/allowed_users.json")
@@ -59,6 +60,7 @@ REQUIRED_COLUMNS = ["Юзернейм", "Продукт"]
 QUEUE_KEY = "prepared_send_queue"
 PREPARING_KEY = "preparing_import"
 SCHEDULE_TASK_KEY = "scheduled_send_task"
+delivery_gate = None  # Set by the dialogue runtime only when explicitly enabled.
 
 
 class TelegramSendPause(RuntimeError):
@@ -1428,6 +1430,17 @@ async def confirm_command(
 async def send_one_prepared_message(
     item: dict,
 ) -> tuple[str, str]:
+    if delivery_gate is None:
+        return await _send_one_prepared_message(item)
+    def guard():
+        access_runtime.require_access()
+        require_send_cooldown_finished()
+    return await delivery_gate.run(lambda: _send_one_prepared_message(item),guard)
+
+
+async def _send_one_prepared_message(
+    item: dict,
+) -> tuple[str, str]:
     """
     PeerFloodError допускается к единственной контролируемой попытке
     восстановления. Resolver-FloodWait допускается только после проверки
@@ -1614,11 +1627,17 @@ async def send_one_prepared_message(
     # Telegram must prevent the next outgoing client message.
     try:
         access_runtime.require_access()
+        require_contact_allowed(config.DATABASE_PATH,manager_id=config.MANAGER_ID,peer_id=getattr(entity,'id',None))
     except AccessDenied as exc:
         update_message_status(message_id=message_id, status="not_sent", send_error=str(exc))
         update_client_status(client_id, "manual_review")
         update_prepared_status(item, "manual_review", "Доступ отключён до отправки: " + str(exc))
         raise
+    except ContactOptOutError as exc:
+        update_message_status(message_id=message_id,status='not_sent',send_error=str(exc))
+        update_client_status(client_id,'manual_review')
+        update_prepared_status(item,'manual_review',str(exc))
+        return 'send_failed',str(exc)
     try:
         sent_message = await telegram_client.send_message(
             entity,

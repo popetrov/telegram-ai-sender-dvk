@@ -28,6 +28,9 @@ def backup(state, destination, keep=30):
                     raise ValueError('Backup integrity check failed')
         for name in ('signing.key', 'encryption.key', 'public_key.txt', 'sync_public_key.txt'):
             shutil.copy2(state / name, staging / name)
+        knowledge=state/'knowledge.json'
+        if knowledge.is_symlink():raise ValueError('Unsafe knowledge backup source')
+        if knowledge.is_file():shutil.copy2(knowledge,staging/knowledge.name)
         temporary = staging / 'backup.zip'
         with zipfile.ZipFile(temporary, 'x', zipfile.ZIP_DEFLATED) as archive:
             for path in staging.iterdir():

@@ -21,6 +21,7 @@ class ManualUpdateTests(unittest.TestCase):
         self.release = self.root/"release"
         self.release.mkdir()
         for name in updater.RUNTIME:
+            (self.release/name).parent.mkdir(parents=True,exist_ok=True)
             (self.release/name).write_text("VALUE = 1\n" if name.endswith(".py") else "content\n", encoding="utf-8")
         (self.release/"version.txt").write_text("2.0.20\n", encoding="utf-8")
         self.products = {"БГ": {"prompt": "bg.md", "aliases": ["бг"], "context_adapters": []}}

@@ -73,3 +73,45 @@ class DialogueStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):self.store.finish_action(action,status='sent')
         self.store.finish_action(action,status='sent',telegram_id=14)
         with self.assertRaises(ValueError):self.store.finish_action(action,status='sent',telegram_id=14)
+
+    def test_ready_handoff_pauses_atomically_and_survives_restart_without_duplicate_notice(self):
+        revision=self.history();action=self.action(revision)
+        values=dict(event_key='ready:11',event_type='ready',summary='Ready to apply',pause=True,expected_revision=revision)
+        notice=self.store.handoff(self.thread,**values)
+        self.assertEqual(self.store.snapshot(self.thread)[0]['state'],'human')
+        with self.assertRaises(ValueError):self.store.claim_action(action)
+        reboot=DialogueStore(self.path,clock=lambda:1000)
+        self.assertEqual(reboot.handoff(self.thread,**values),notice)
+        self.assertEqual(len(reboot.pending_notices(42)),1)
+        self.assertEqual(reboot.pending_notices(43),[])
+        with self.assertRaises(ValueError):reboot.acknowledge_notice(notice,account_id=43)
+        reboot.acknowledge_notice(notice,account_id=42)
+        self.assertEqual(reboot.pending_notices(42),[])
+
+    def test_interest_notice_does_not_pause_and_manager_can_take_and_return(self):
+        revision=self.history()
+        self.store.handoff(self.thread,event_key='need:11',event_type='need',summary='Guarantee required',pause=False,expected_revision=revision)
+        self.assertEqual(self.store.snapshot(self.thread)[0]['state'],'waiting')
+        with self.assertRaises(PermissionError):
+            self.store.manager_control(self.thread,actor_account_id=43,manager_id='manager_001',command='pause',expected_revision=revision)
+        self.store.manager_control(self.thread,actor_account_id=42,manager_id='manager_001',command='pause',expected_revision=revision)
+        thread,_=self.store.snapshot(self.thread)
+        self.assertEqual(thread['state'],'human')
+        with self.assertRaises(StaleDialogue):
+            self.store.manager_control(self.thread,actor_account_id=42,manager_id='manager_001',command='resume',expected_revision=revision)
+        self.store.manager_control(self.thread,actor_account_id=42,manager_id='manager_001',command='resume',expected_revision=thread['revision'])
+        self.assertEqual(self.store.snapshot(self.thread)[0]['state'],'engaged')
+
+    def test_manager_resume_cannot_override_client_opt_out(self):
+        revision=self.history();self.store.set_state(self.thread,'opt_out',expected_revision=revision)
+        revision=self.store.snapshot(self.thread)[0]['revision']
+        with self.assertRaises(ValueError):
+            self.store.manager_control(self.thread,actor_account_id=42,manager_id='manager_001',command='resume',expected_revision=revision)
+
+    def test_followup_schedule_counts_only_confirmed_deliveries(self):
+        revision=self.history()
+        for stage,status in ((1,'sent'),(2,'uncertain')):
+            action=self.store.queue_action(self.thread,action_key=f'reminder:{stage}',kind='reminder',text='Follow up',expected_revision=revision,due_at=999)
+            self.store.claim_action(action)
+            self.store.finish_action(action,status=status,telegram_id=15 if status=='sent' else None)
+        self.assertEqual(self.store.reminder_history(self.thread),[1000])

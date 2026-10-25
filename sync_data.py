@@ -2,7 +2,8 @@
 import json
 import uuid
 
-TABLES = ('clients', 'research_runs', 'messages', 'imports', 'prepared_messages', 'uploaded_rows')
+DIALOGUE_TABLES = ('dialogue_threads','dialogue_messages','dialogue_actions','dialogue_notices')
+TABLES = ('clients', 'research_runs', 'messages', 'imports', 'prepared_messages', 'uploaded_rows') + DIALOGUE_TABLES
 
 
 def initialize(db):
@@ -14,6 +15,8 @@ def initialize(db):
                (str(uuid.uuid4()),))
     for table in TABLES:
         columns = [r[1] for r in db.execute(f'PRAGMA table_info({table})')]
+        if not columns:
+            continue  # Older manager installations do not have dialogue tables.
         fields = ','.join("'%s',NEW.\"%s\"" % (c, c) for c in columns)
         for operation in ('INSERT', 'UPDATE'):
             db.execute(f'''CREATE TRIGGER IF NOT EXISTS sync_{table}_{operation.lower()}
@@ -24,6 +27,8 @@ def initialize(db):
     marker = db.execute("SELECT 1 FROM local_settings WHERE key='sync_initial_export'").fetchone()
     if marker is None:
         for table in TABLES:
+            if not db.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?',(table,)).fetchone():
+                continue
             for row in db.execute(f'SELECT * FROM {table}').fetchall():
                 enqueue(db, {'table': table, 'row': dict(row)})
         db.execute("INSERT INTO local_settings VALUES ('sync_initial_export','1',datetime('now'))")

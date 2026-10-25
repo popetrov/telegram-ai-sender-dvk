@@ -274,8 +274,19 @@ def main():
         directory = ManagerDirectory(store)
         admin = create_server(token, admin_id, key, store, role='admin', notices=notices, directory=directory)
         service = create_server(service_token, admin_id, key, store, sync_key, role='service', notices=notices)
+        from dialogue_center import load_broker
         try:
-            asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username, directory=directory))
+            broker,knowledge_clients=load_broker(STATE,store,key,sync_key)
+        except Exception as exc:
+            logging.getLogger(__name__).warning('Knowledge configuration unavailable (%s)',type(exc).__name__)
+            notices.error('база знаний',exc)
+            broker,knowledge_clients=None,[]
+        if broker is not None:
+            from dialogue_knowledge_transport import register_receiver as register_knowledge
+            register_knowledge(service,broker)
+        try:
+            asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username,
+                                    directory=directory,knowledge_clients=knowledge_clients))
         except KeyboardInterrupt:
             print('Центр остановлен.')
 

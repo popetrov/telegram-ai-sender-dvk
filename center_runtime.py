@@ -5,7 +5,7 @@ import logging
 from telegram.error import NetworkError
 
 
-async def run_center(admin, service, notices, admin_id, state, expected_username, *, directory=None):
+async def run_center(admin, service, notices, admin_id, state, expected_username, *, directory=None, knowledge_clients=()):
     started, polling, tasks = [], [], []
     async with AsyncExitStack() as stack:
         try:
@@ -51,3 +51,5 @@ async def run_center(admin, service, notices, admin_id, state, expected_username
                     await app.updater.stop()
                 if app.running:
                     await app.stop()
+            for resource in knowledge_clients:
+                await resource.close()
