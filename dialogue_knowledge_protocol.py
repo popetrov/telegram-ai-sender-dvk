@@ -77,10 +77,11 @@ def read_response(packet, *, request,private_key,signing_public_key,clock=time.t
 
 
 class KnowledgeBroker:
-    def __init__(self, authority, providers,signing_key,encryption_key,clock=time.time):
+    def __init__(self, authority, providers,signing_key,encryption_key,clock=time.time,allowed_accounts=None):
         self.authority,self.providers=authority,providers
         self.signing_key,self.encryption_key=signing_key,encryption_key
         self.clock=clock
+        self.allowed_accounts=allowed_accounts
 
     def binding(self, payload, account_id):
         allowed,_=self.authority.permission(account_id,payload['subject'])
@@ -90,6 +91,8 @@ class KnowledgeBroker:
         if manager is None:
             raise PermissionError('Unknown manager')
         key=(manager['company_id'],payload['business_id'])
+        if self.allowed_accounts is not None and account_id not in self.allowed_accounts.get(key,set()):
+            raise PermissionError('This account is not enabled for the knowledge pilot')
         provider=self.providers.get(key)
         if provider is None or payload['product'] not in provider.products:
             raise PermissionError('Knowledge business binding denied')

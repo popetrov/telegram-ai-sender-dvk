@@ -61,6 +61,14 @@ class KnowledgeProtocolTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(KnowledgeUnavailable):self.result(response,request,private)
         self.provider.lookup.assert_not_awaited()
 
+    async def test_other_manager_in_same_company_is_not_automatically_in_pilot(self):
+        self.authority.register(43,'manager_002:43');self.authority.assign(43,'dvk')
+        self.broker.allowed_accounts={('dvk','dvk_finance'):{42}}
+        request,private,packet=self.request(subject='manager_002:43')
+        response=await self.broker.handle(packet,account_id=43)
+        with self.assertRaises(KnowledgeUnavailable):self.result(response,request,private)
+        self.provider.lookup.assert_not_awaited()
+
     async def test_expired_request_is_rejected_before_provider(self):
         self.broker.clock=lambda:1700
         _,_,packet=self.request()
