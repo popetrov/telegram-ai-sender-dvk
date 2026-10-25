@@ -30,7 +30,7 @@ RUNTIME = {
     "spam_monitor.py",
     "dialogue_store.py", "dialogue_policy.py", "dialogue_engine.py", "dialogue_ai.py",
     "dialogue_knowledge.py", "dialogue_knowledge_protocol.py", "dialogue_knowledge_transport.py",
-    "dialogue_manager_ui.py", "dialogue_runtime.py", "dialogue_send_gate.py", "dialogue_setup.py",
+    "dialogue_manager_ui.py", "dialogue_runtime.py", "dialogue_send_gate.py", "dialogue_setup.py", "bot_menu.py",
     "dialogue_profiles/dvk_finance.json", "DIALOGUES.md",
 }
 MAX_BYTES = 64 * 1024 * 1024

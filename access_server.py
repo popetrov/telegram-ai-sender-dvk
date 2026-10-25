@@ -170,6 +170,7 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
     async def status(update, context):
         if update.effective_user.id != admin_id or update.effective_chat.type != "private":
             return
+        from bot_menu import keyboard
         if store is not None:
             await update.effective_message.reply_text(
                 'Центр работает.\n/users — менеджеры\n/companies — компании\n'
@@ -177,13 +178,13 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                 '/renew ID — продлить на месяц + 2 дня\n/approve ID КОМПАНИЯ\n/revoke ID\n'
                 'Часовой пояс: Asia/Dubai. dvk — бессрочно.'
                 + ('\n/profile ID — внутренняя карточка\n/cancel — отменить заполнение карточки'
-                   if directory is not None else ''))
+                   if directory is not None else ''),reply_markup=keyboard('admin'))
             return
         registry = load_registry()
         await update.effective_message.reply_text(
             "Центр доступа работает. /approve ID — разрешить; /revoke ID — отключить.\n"
             f"Установок: {len(registry)}, разрешено: "
-            f"{sum(r.get('allowed') is True for r in registry.values())}")
+            f"{sum(r.get('allowed') is True for r in registry.values())}",reply_markup=keyboard('admin'))
 
     async def users(update, context):
         if update.effective_user.id != admin_id or update.effective_chat.type != "private":
@@ -228,6 +229,8 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
         if directory is not None:
             from manager_directory import register_admin_handlers
             register_admin_handlers(application, directory, admin_id)
+        from bot_menu import register as register_menu
+        register_menu(application,role='admin',allowed=lambda u:u.effective_user.id==admin_id and u.effective_chat.type=='private')
     if role != 'admin' and sync_key is not None and store is not None:
         from sync_runtime import register_receiver
         register_receiver(application, store, key, sync_key, notices=notices)

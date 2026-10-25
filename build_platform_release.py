@@ -15,7 +15,7 @@ CENTER_FILES = {
     'sync_protocol.py', 'sync_runtime.py', 'sync_data.py', 'file_lock.py',
     'center_setup.py', 'center_backup.py', 'center.bat', 'center_mac.sh',
     'center_runtime.py', 'owner_notifications.py',
-    'dialogue_center.py','dialogue_knowledge.py','dialogue_knowledge_protocol.py','dialogue_knowledge_transport.py',
+    'dialogue_center.py','dialogue_knowledge.py','dialogue_knowledge_protocol.py','dialogue_knowledge_transport.py','bot_menu.py',
     'manager_directory.py', 'sheets_directory_sync.py', 'google_roster_bridge.gs', 'GOOGLE_ROSTER.md',
     'requirements-authority.txt', 'PILOT.md', 'DATA_POLICY.md', 'PROJECT_AUDIT.md',
 }

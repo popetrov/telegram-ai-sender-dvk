@@ -779,6 +779,7 @@ async def start_command(
         await message.reply_text(onboarding_text(user.id))
         return
 
+    from bot_menu import keyboard
     await message.reply_text(
         "Telegram AI Sender готов.\n\n"
         "Отправьте Excel-файл .xlsx с колонками:\n"
@@ -786,7 +787,8 @@ async def start_command(
         "После проверки списка используйте /confirm.\n"
         "Готовые сообщения сохраняются в SQLite до отправки.\n"
         "После перезапуска их можно восстановить командой /queue.\n\n"
-        "Для отмены запланированной отправки используйте /cancel."
+        "Для отмены запланированной отправки используйте /cancel.",
+        reply_markup=keyboard('sender'),
     )
 
 
@@ -2253,4 +2255,6 @@ def create_bot() -> Application:
         )
     )
 
+    from bot_menu import register as register_menu
+    register_menu(application,role='sender',allowed=lambda u:u.effective_chat.type=='private' and user_is_allowed(u))
     return application

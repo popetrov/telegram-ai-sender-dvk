@@ -170,6 +170,11 @@ async def main():
         await bot.initialize()
         await bot.start()
         await bot.updater.start_polling()
+        try:
+            from bot_menu import publish as publish_menu
+            await publish_menu(bot,access_runtime.account_id,'sender')
+        except Exception as exc:
+            print('Кнопки доступны через /menu ('+type(exc).__name__+').',flush=True)
         import spam_monitor
         async def notify_spam(text):
             await bot.bot.send_message(chat_id=access_runtime.account_id,text=text)

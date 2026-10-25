@@ -39,6 +39,11 @@ async def run_center(admin, service, notices, admin_id, state, expected_username
                 tasks.append(asyncio.create_task(loop(state, state / 'backup.json')))
             print(f'Центр подключён. Управление: @{admin.bot.username}. '
                   f'Технический обмен: @{service.bot.username}.', flush=True)
+            try:
+                from bot_menu import publish
+                await publish(admin,admin_id,'admin')
+            except Exception as exc:
+                logging.getLogger(__name__).warning('Owner menu available via /menu (%s)',type(exc).__name__)
             await asyncio.Event().wait()
         finally:
             for task in tasks:

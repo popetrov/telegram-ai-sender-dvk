@@ -38,6 +38,8 @@ def register(application,store,*,account_id,manager_id):
     async def status(update,context):
         if update.effective_user.id!=account_id or update.effective_chat.type!='private':return
         threads=store.threads(account_id)
+        if not threads:
+            await update.effective_message.reply_text('Подключённых диалогов пока нет.');return
         args=getattr(context,'args',None) or []
         try:page=int(args[0]) if args else 1
         except (ValueError,TypeError):page=1
@@ -46,14 +48,30 @@ def register(application,store,*,account_id,manager_id):
             paused=sum(t['state'] in {'human','opt_out','closed'} for t in threads)
             await update.effective_message.reply_text(
                 f'Диалогов: {len(threads)}. Включены: {len(threads)-paused}. На паузе или завершены: {paused}.\n'
-                f'Страница {page}/{pages}. Другая страница: /dialogues НОМЕР')
-        for thread in threads[(page-1)*10:page*10]:
+                f'Страница {page}/{pages}. Листайте кнопками под последним диалогом.')
+        selected=threads[(page-1)*10:page*10]
+        for index,thread in enumerate(selected):
             state=('на паузе' if thread['state']=='human' else 'запрещены клиентом' if thread['state']=='opt_out'
                    else 'завершены' if thread['state']=='closed' else 'проверяется история' if not thread['history_complete'] else 'включены')
+            markup=controls(thread['id'],thread['revision'],thread['state'])
+            if pages>1 and index==len(selected)-1:
+                from telegram import InlineKeyboardButton,InlineKeyboardMarkup
+                buttons=list(markup.inline_keyboard) if markup else []
+                navigation=[]
+                if page>1:navigation.append(InlineKeyboardButton('← Назад',callback_data=f'dlgp:{page-1}'))
+                if page<pages:navigation.append(InlineKeyboardButton('Дальше →',callback_data=f'dlgp:{page+1}'))
+                buttons.append(navigation);markup=InlineKeyboardMarkup(buttons)
             await update.effective_message.reply_text(
                 f"{store.client_label(thread['id'])} · {thread['product']}\nАвтоответы: {state}.",
-                reply_markup=controls(thread['id'],thread['revision'],thread['state']))
+                reply_markup=markup)
     application.add_handler(CommandHandler('dialogues',status))
+    async def page(update,context):
+        if update.effective_user.id!=account_id or update.effective_chat.type!='private':
+            await update.callback_query.answer('Доступ запрещён.',show_alert=True);return
+        await update.callback_query.answer()
+        from bot_menu import dispatch
+        await dispatch(application,update,context,'dialogues',[update.callback_query.data.split(':')[1]])
+    application.add_handler(CallbackQueryHandler(page,pattern=r'^dlgp:[0-9]+$'))
 
 
 async def deliver_notices(bot,store,*,account_id):
