@@ -27,6 +27,10 @@ from access_lease import AccessDenied
 log=logging.getLogger(__name__)
 
 
+class DeletedHistory(ValueError):
+    """A deleted chat/message is a permanent no-send condition, never an invitation to retry."""
+
+
 def original_text_matches(actual,saved):
     if actual==saved:return True
     from telethon.extensions.markdown import parse
@@ -36,7 +40,7 @@ def original_text_matches(actual,saved):
 def read_settings(root):
     path=Path(root)/'data/dialogue-runtime.json'
     if not path.exists():return None
-    if path.is_symlink() or path.stat().st_size>16000:raise ValueError('Unsafe dialogue settings')
+    if path.is_symlink() or path.stat().st_size>256000:raise ValueError('Unsafe dialogue settings')
     value=json.loads(path.read_text('utf-8'))
     if value.get('enabled') is False:return None
     pilot=(value.get('mode')=='pilot' and type(value.get('peer_id')) is int and value['peer_id']>0
@@ -45,11 +49,28 @@ def read_settings(root):
     cohort=(value.get('mode')=='selected_queue' and isinstance(ids,list) and 0<len(ids)<=1000
             and all(type(i) is int and i>0 for i in ids) and len(set(ids))==len(ids)
             and type(value.get('activated_at')) is int and value['activated_at']>0)
-    if (value.get('format')!=1 or value.get('enabled') is not True or not (pilot or cohort)
+    contacts=value.get('contacts')
+    base=(value.get('mode')=='reviewed_base' and isinstance(contacts,list) and 0<len(contacts)<=10000
+          and all(isinstance(c,dict) and set(c)=={'peer_id','product'} and type(c['peer_id']) is int
+                  and c['peer_id']>0 and c['product'] in {'БГ','Кредит'} for c in contacts)
+          and len({c['peer_id'] for c in contacts})==len(contacts)
+          and isinstance(value.get('review_id'),str) and len(value['review_id'])==32
+          and all(c in '0123456789abcdef' for c in value['review_id']))
+    if (value.get('format')!=1 or value.get('enabled') is not True or not (pilot or cohort or base)
             or value.get('business_id')!='dvk_finance'
             or not isinstance(value.get('company_id'),str) or not value['company_id']):
         raise ValueError('Invalid single-contact dialogue pilot settings')
     return value
+
+
+def historical_contacts(db,manager_id):
+    rows=db.execute('''SELECT c.telegram_id,c.product FROM clients c JOIN messages m ON m.client_id=c.id
+        WHERE c.manager_id=? AND c.telegram_id>0 AND m.status='sent' AND m.telegram_message_id IS NOT NULL
+        GROUP BY c.telegram_id,c.product ORDER BY c.telegram_id,c.product''',(manager_id,)).fetchall()
+    peers={}
+    for peer,product in rows:peers.setdefault(peer,set()).add(product)
+    return [dict(peer_id=peer,product=next(iter(products))) for peer,products in peers.items()
+            if len(products)==1 and next(iter(products)) in {'БГ','Кредит'}]
 
 
 def should_reply_at_activation(settings,history):
@@ -96,7 +117,7 @@ class DialogueRuntime:
         ai=DialogueAI(ai_client,model=self.policy.model,timezone=self.policy.timezone.key,prompts=self.policy.prompts)
         self.engine=DialogueEngine(self.store,policy,analyst=ai,writer=ai,knowledge=self.remote,
                                    require_access=access_runtime.require_access)
-        self.event_handler=None
+        self.event_handler=None;self.delete_handler=None
         if gate is None:bot.delivery_gate=self.gate
 
     async def enroll(self):
@@ -112,7 +133,12 @@ class DialogueRuntime:
             raise ValueError('Для тестового контакта нет подтверждённого первого сообщения по этому продукту.')
         self.peer=await self.client.get_input_entity(self.settings['peer_id'])
         original=await self.client.get_messages(self.peer,ids=row['telegram_message_id'])
-        if (original is None or not original.out or not original_text_matches(original.raw_text,row['text'])
+        if original is None or not getattr(original,'id',None) or type(original).__name__=='MessageEmpty':
+            for thread in self.store.threads(self.account_id):
+                if thread['peer_id']==self.settings['peer_id']:
+                    self.thread_id=thread['id'];self.close_deleted()
+            raise DeletedHistory('Первое сообщение удалено. Писать этому клиенту запрещено.')
+        if (not original.out or not original_text_matches(original.raw_text,row['text'])
                 or original.chat_id!=self.settings['peer_id']):
             raise ValueError('Первое сообщение не совпало с историей Telegram. Автоответы не включены.')
         self.thread_id=self.store.enroll(company_id=self.settings['company_id'],business_id=self.policy.business_id,
@@ -120,8 +146,13 @@ class DialogueRuntime:
             product=self.settings['product'],first_message_id=original.id,first_sent_at=int(original.date.timestamp()))
         fresh=not self.store.thread(self.thread_id)['history_complete']
         new_incoming=await self.refresh(full=True,initial=fresh)
+        if original.id not in {m['telegram_id'] for m in self.store.snapshot(self.thread_id)[1]}:
+            self.close_deleted();raise DeletedHistory('Первое сообщение отсутствует в прочитанной истории.')
         self.store.mark_history_complete(self.thread_id)
-        if fresh:
+        if self.settings.get('mode')=='reviewed_base':
+            await self.review_existing()
+            if new_incoming and not fresh:self.changed.set()
+        elif fresh:
             thread,history=self.store.snapshot(self.thread_id)
             if thread['state'] not in {'human','opt_out','closed'} and any(
                     m['direction']=='outgoing' and m['telegram_id']!=original.id
@@ -138,6 +169,66 @@ class DialogueRuntime:
             self.store.handoff(self.thread_id,event_key='interrupted_delivery',event_type='delivery',
                 summary='Есть отправка с неопределённым результатом. Проверьте чат вручную; автодиалог приостановлен.',
                 pause=True,expected_revision=thread['revision'])
+
+    def close_deleted(self):
+        thread=self.store.thread(self.thread_id)
+        if thread['state'] not in {'closed','opt_out'}:
+            self.store.set_state(self.thread_id,'closed',expected_revision=thread['revision'])
+
+    async def on_deleted(self,event):
+        peer=getattr(event,'chat_id',None)
+        if peer is not None and peer!=self.settings['peer_id']:return
+        deleted=set(event.deleted_ids)
+        async with self.lock:
+            if deleted.intersection(m['telegram_id'] for m in self.store.snapshot(self.thread_id)[1]):
+                self.close_deleted()
+
+    async def verify_visible_history(self):
+        """Recheck all known IDs before delivery, including deletions while AI was working."""
+        thread,history=self.store.snapshot(self.thread_id)
+        ids=[m['telegram_id'] for m in history]
+        if thread['first_message_id'] not in ids:
+            self.close_deleted();return False
+        visible=await self.client.get_messages(self.peer,ids=ids)
+        found={m.id for m in visible if m is not None and type(m).__name__!='MessageEmpty'}
+        if set(ids)-found:
+            self.close_deleted();return False
+        return True
+
+    async def review_existing(self):
+        """One review per authorized snapshot. Advanced conversations always stay manual."""
+        key='dialogue_base_review:'+self.settings['review_id']+':'+str(self.settings['peer_id'])
+        with self.store.connection() as db:
+            if db.execute('SELECT 1 FROM local_settings WHERE key=?',(key,)).fetchone():return
+        thread,history=self.store.snapshot(self.thread_id)
+        if thread['state'] in {'closed','opt_out'}:return
+        outgoing=[m for m in history if m['direction']=='outgoing' and m['telegram_id']!=thread['first_message_id']
+                  and m['sent_at']>=thread['first_sent_at']]
+        incoming=[m for m in history if m['direction']=='incoming']
+        def manual(summary):
+            current=self.store.thread(self.thread_id)
+            self.store.handoff(self.thread_id,event_key=key,event_type='base_review',summary=summary,
+                pause=True,expected_revision=current['revision'])
+        if thread['state']=='human' or outgoing:
+            manual('Нужно ручное рассмотрение: в переписке уже были дополнительные исходящие сообщения или диалог был передан менеджеру. Клиенту ничего не отправлено.')
+        elif incoming:
+            try:
+                decision=await self.engine.analyst.analyze(thread=thread,history=history,now=int(time.time()))
+                self.engine._check(self.thread_id,thread['revision'])
+                if decision['intent']=='opt_out':
+                    self.store.set_state(self.thread_id,'opt_out',expected_revision=thread['revision'])
+                elif decision['intent']=='question' and incoming[-1]['sent_at']>=thread['first_sent_at']:
+                    # The ordinary engine uses the complete context and verified KB,
+                    # and persists a unique action before any send can occur.
+                    await self.engine.on_incoming(self.thread_id)
+                elif decision['intent']=='later' and type(decision.get('return_at')) is int and decision['return_at']>time.time():
+                    self.store.set_state(self.thread_id,'later',expected_revision=thread['revision'],next_contact_at=decision['return_at'])
+                else:manual('Нужно ручное рассмотрение существующего диалога: '+decision['summary'])
+            except KnowledgeUnavailable:
+                manual('Нужно ручное рассмотрение: не удалось надёжно разобрать существующую переписку. Клиенту ничего не отправлено.')
+        with self.store.connection() as db:
+            db.execute('INSERT OR REPLACE INTO local_settings(key,value,updated_at) VALUES(?,?,?)',
+                       (key,'done',datetime.now(timezone.utc).isoformat()))
 
     async def adopt_history(self):
         """Honor existing refusals/agreements without answering old messages at activation."""
@@ -187,14 +278,18 @@ class DialogueRuntime:
 
     async def refresh(self,*,full=False,initial=False):
         minimum=0 if full else self.store.last_message_id(self.thread_id)
-        incoming=False
+        incoming=False;seen=set()
+        previous={m['telegram_id'] for m in self.store.snapshot(self.thread_id)[1]} if full else set()
         async for message in self.client.iter_messages(self.peer,reverse=True,min_id=minimum):
+            seen.add(message.id)
             incoming=self.record(message,full=initial) or incoming
+        if full and previous-seen:self.close_deleted()
         return incoming
 
     async def send(self,action):
         import bot,access_runtime
         async def operation():
+            if not await self.verify_visible_history():return
             # Fetch messages arriving during the shared send interval before claiming.
             if await self.refresh():
                 self.changed.set();return
@@ -236,6 +331,8 @@ class DialogueRuntime:
             self.event_handler=handler
             self.client.add_event_handler(handler,events.NewMessage(chats=[self.settings['peer_id']]))
             self.client.add_event_handler(handler,events.MessageEdited(chats=[self.settings['peer_id']]))
+            self.delete_handler=self.on_deleted
+            self.client.add_event_handler(self.delete_handler,events.MessageDeleted())
             # No reply to old history on startup. Only newly received messages trigger replies.
             while True:
                 try:
@@ -278,6 +375,7 @@ class DialogueRuntime:
                 text='Тестовый автодиалог не включён. Первая часть работает; нужна проверка настройки или истории тестового контакта.')
         finally:
             if self.event_handler:self.client.remove_event_handler(self.event_handler)
+            if self.delete_handler:self.client.remove_event_handler(self.delete_handler)
             bot.delivery_gate=self.previous_gate
             await self.ai_client.close()
 
@@ -297,12 +395,20 @@ class SelectedQueueRuntime:
         self.gate=DeliveryGate(interval=bot.SEND_INTERVAL_SECONDS)
         self.previous_gate=bot.delivery_gate;bot.delivery_gate=self.gate
         self.workers={};self.attempted=set();self.scanned_at={};self.cursor=0
-        self.handler=None;self.lock=asyncio.Lock()
+        self.handler=None;self.delete_handler=None;self.lock=asyncio.Lock();self.deleted_count=0
 
     async def add_contact(self,peer,product):
         worker=DialogueRuntime(self.client,self.application,self.root,
             {**self.settings,'peer_id':peer,'product':product},self.policy,self.ai_client,gate=self.gate)
-        await worker.enroll()
+        try:await worker.enroll()
+        except (DeletedHistory,AccessDenied,PeerFloodError,FloodWaitError):raise
+        except Exception:
+            if worker.thread_id:
+                thread=worker.store.thread(worker.thread_id)
+                worker.store.handoff(worker.thread_id,event_key='history_not_verified',event_type='history',
+                    summary='История не подтверждена полностью. Клиенту ничего не отправлено; нужно ручное рассмотрение.',
+                    pause=True,expected_revision=thread['revision'])
+            raise
         self.workers[peer]=worker;self.scanned_at[peer]=time.monotonic()
         return worker
 
@@ -328,7 +434,7 @@ class SelectedQueueRuntime:
     async def run(self):
         import bot,access_runtime
         from database import get_connection
-        last_discovery=0;pending=[];enrollment_blocked=False;reported=False
+        last_discovery=0;pending=[];enrollment_blocked=False;reported=False;last_progress=0
         try:
             register_ui(self.application,self.store,account_id=self.account_id,manager_id=self.manager_id)
             async def handler(event):
@@ -340,14 +446,25 @@ class SelectedQueueRuntime:
             # No username resolution for unknown senders, no reads of their history.
             self.client.add_event_handler(handler,events.NewMessage())
             self.client.add_event_handler(handler,events.MessageEdited())
+            async def deleted(event):
+                for worker in list(self.workers.values()):await worker.on_deleted(event)
+            self.delete_handler=deleted
+            self.client.add_event_handler(deleted,events.MessageDeleted())
+            base=self.settings['mode']=='reviewed_base'
+            unsupported=self.settings.get('unsupported_products',[]) if base else []
             await self.application.bot.send_message(chat_id=self.account_id,
-                text=f"Сопровождение включено только для выбранной очереди ({len(self.settings['prepared_ids'])} записей). Диалог подключается после подтверждённой отправки. Старая база не подключается. Управление — /dialogues.")
+                text=(f"Проверяю старую базу: {len(self.settings['contacts'])} клиентов по БГ и кредиту. Удалённым перепискам писать не буду. Продвинувшиеся диалоги передам вам. /dialogues — управление."
+                      if base else f"Сопровождение включено только для выбранной очереди ({len(self.settings['prepared_ids'])} записей). Диалог подключается после подтверждённой отправки. Старая база не подключается. Управление — /dialogues.")
+                     + ('\nДругие продукты требуют ручного рассмотрения, правил автоответов для них пока нет: '
+                        + '; '.join(f"{v['product']}: {v['count']}" for v in unsupported) if unsupported else ''))
             while True:
                 worker=None
                 try:
                     access_runtime.require_access();bot.require_send_cooldown_finished()
                     if not enrollment_blocked and time.monotonic()-last_discovery>=60:
-                        with get_connection() as db:candidates=eligible_contacts(db,self.manager_id,self.settings['prepared_ids'])
+                        if base:candidates=[(c['peer_id'],c['product']) for c in self.settings['contacts']]
+                        else:
+                            with get_connection() as db:candidates=eligible_contacts(db,self.manager_id,self.settings['prepared_ids'])
                         pending=[item for item in candidates if item[0] not in self.attempted]
                         last_discovery=time.monotonic()
                     # Replies take priority over background enrollment and reminders.
@@ -356,10 +473,16 @@ class SelectedQueueRuntime:
                         peer,product=pending.pop(0);self.attempted.add(peer)
                         try:
                             await self.add_contact(peer,product)
-                        except (PeerFloodError,FloodWaitError):
+                        except PeerFloodError:
                             enrollment_blocked=True;raise
+                        except FloodWaitError:
+                            # Retry the read-only enrollment only after Telegram's
+                            # persisted cooldown, never while that pause is active.
+                            self.attempted.discard(peer);last_discovery=0;raise
                         except AccessDenied:
                             self.attempted.discard(peer);raise
+                        except DeletedHistory:
+                            self.deleted_count+=1
                         except Exception as exc:
                             log.warning('Contact history enrollment deferred (%s)',type(exc).__name__)
                             await self.application.bot.send_message(chat_id=self.account_id,
@@ -367,10 +490,15 @@ class SelectedQueueRuntime:
                     if worker is None and self.workers:
                         workers=list(self.workers.values());worker=workers[self.cursor%len(workers)];self.cursor+=1
                     if worker is not None:await self.service(worker)
+                    if base and len(self.attempted)>=last_progress+25:
+                        last_progress=len(self.attempted)
+                        await self.application.bot.send_message(chat_id=self.account_id,
+                            text=f"Проверка базы: {last_progress}/{len(self.settings['contacts'])}. Подтверждённых историй: {len(self.workers)}. Удалённых первых сообщений: {self.deleted_count}. Продолжаю постепенно.")
                     if self.attempted and not pending and not reported:
                         reported=True
                         await self.application.bot.send_message(chat_id=self.account_id,
-                            text=f'Сейчас подключено диалогов: {len(self.workers)}. Не подключено после проверки: {len(self.attempted)-len(self.workers)}. Остальные участники выбранной очереди подключатся после подтверждённой отправки. /dialogues — управление.')
+                            text=(f'Проверка базы завершена. Проверено: {len(self.attempted)}. Диалогов с подтверждённой историей: {len(self.workers)}. Удалённое первое сообщение: {self.deleted_count} — отправок не будет. Других неподключённых: {len(self.attempted)-len(self.workers)-self.deleted_count}. Продвинувшиеся диалоги оставлены на ручном рассмотрении. /dialogues — управление.'
+                                  if base else f'Сейчас подключено диалогов: {len(self.workers)}. Не подключено после проверки: {len(self.attempted)-len(self.workers)}. Остальные участники выбранной очереди подключатся после подтверждённой отправки. /dialogues — управление.'))
                 except (AccessDenied,bot.TelegramSendPause,StaleDialogue):pass
                 except PeerFloodError:
                     bot.pause_for_spam()
@@ -388,6 +516,7 @@ class SelectedQueueRuntime:
                 await asyncio.sleep(2)
         finally:
             if self.handler:self.client.remove_event_handler(self.handler)
+            if self.delete_handler:self.client.remove_event_handler(self.delete_handler)
             bot.delivery_gate=self.previous_gate
             await self.ai_client.close()
 
@@ -401,7 +530,7 @@ async def start(client,application,root=Path('.')):
     from openai import AsyncOpenAI
     ai_client=AsyncOpenAI(api_key=config.OPENAI_API_KEY,timeout=60,max_retries=0)
     try:
-        runtime_class=SelectedQueueRuntime if settings['mode']=='selected_queue' else DialogueRuntime
+        runtime_class=SelectedQueueRuntime if settings['mode'] in {'selected_queue','reviewed_base'} else DialogueRuntime
         runtime=runtime_class(client,application,root,settings,policy,ai_client)
     except Exception:
         await ai_client.close()

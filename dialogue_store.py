@@ -28,9 +28,11 @@ def require_contact_allowed(path, *, manager_id, peer_id):
     db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=10)
     try:
         exists=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_threads'").fetchone()
-        if exists and db.execute("SELECT 1 FROM dialogue_threads WHERE manager_id=? AND peer_id=? AND state='opt_out'",
-                                 (manager_id,peer_id)).fetchone():
-            raise ContactOptOutError('Клиент попросил больше не писать. Отправка заблокирована.')
+        stopped=db.execute("SELECT state FROM dialogue_threads WHERE manager_id=? AND peer_id=? AND state IN ('opt_out','closed')",
+                           (manager_id,peer_id)).fetchone() if exists else None
+        if stopped:
+            raise ContactOptOutError('Клиент попросил больше не писать. Отправка заблокирована.' if stopped[0]=='opt_out'
+                                    else 'Диалог закрыт, в том числе при удалении переписки. Отправка заблокирована.')
     finally:
         db.close()
 
@@ -146,7 +148,7 @@ class DialogueStore:
                 db.execute('INSERT INTO dialogue_messages VALUES (?,?,?,?,?,?)',
                            (thread_id,telegram_id,direction,text,sent_at,source))
             state = thread['state']
-            if source == 'manager' and state != 'opt_out':
+            if source == 'manager' and state not in {'opt_out','closed'}:
                 state = 'human'
                 db.execute("UPDATE dialogue_notices SET status='handled' WHERE thread_id=? AND status IN ('pending','delivered')",(thread_id,))
             db.execute('UPDATE dialogue_threads SET revision=revision+1,state=?,updated_at=? WHERE id=?',

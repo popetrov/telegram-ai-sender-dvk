@@ -28,6 +28,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.changed=__import__('asyncio').Event()
         self.runtime.gate=DeliveryGate(interval=0)
         self.runtime.refresh=AsyncMock(return_value=False)
+        self.runtime.verify_visible_history=AsyncMock(return_value=True)
         self.runtime.client=Object(send_message=AsyncMock(return_value=self.message(20,'Answer')))
 
     def message(self,id,text,out=True):

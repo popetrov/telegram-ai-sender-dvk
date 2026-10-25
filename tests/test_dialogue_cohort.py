@@ -94,7 +94,8 @@ class CohortTests(unittest.IsolatedAsyncioTestCase):
         import bot
         runtime=SelectedQueueRuntime.__new__(SelectedQueueRuntime)
         runtime.store=Mock();runtime.account_id=42;runtime.manager_id='me';runtime.handler=None
-        runtime.settings={'prepared_ids':[1,2]}
+        runtime.settings={'mode':'selected_queue','prepared_ids':[1,2]}
+        runtime.delete_handler=None
         runtime.client=Object(add_event_handler=Mock(),remove_event_handler=Mock())
         runtime.application=Object(add_handler=Mock(),bot=Object(send_message=AsyncMock(side_effect=asyncio.CancelledError())))
         runtime.ai_client=Object(close=AsyncMock());runtime.previous_gate=DeliveryGate()
@@ -102,7 +103,7 @@ class CohortTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):await runtime.run()
             self.assertIs(bot.delivery_gate,runtime.previous_gate)
         runtime.ai_client.close.assert_awaited_once()
-        runtime.client.remove_event_handler.assert_called_once()
+        self.assertEqual(runtime.client.remove_event_handler.call_count,2)
 
 
 if __name__=='__main__':unittest.main()
