@@ -53,7 +53,7 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(report['conflicts'],[])
         self.assertEqual(self.hashes(),before)
         self.assertFalse(report['activated'])
-        self.assertEqual((self.destination/'version.txt').read_text('utf-8').strip(),'2.0.20')
+        self.assertEqual((self.destination/'version.txt').read_text('utf-8').strip(),(ROOT/'version.txt').read_text('utf-8-sig').strip())
         self.assertEqual((self.destination/'.env').read_bytes(),(self.source/'.env').read_bytes())
         with sqlite3.connect(self.destination/'fixture_session.session') as db:
             self.assertEqual(db.execute('SELECT value FROM fixture_data').fetchone()[0],'synthetic session marker')

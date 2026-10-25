@@ -21,6 +21,9 @@ from file_lock import FileLock
 class StartupUpdateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.version=(ROOT/'version.txt').read_text('utf-8-sig').strip()
+        cls.tag='v'+cls.version
+        parts=cls.version.split('.');parts[-1]=str(int(parts[-1])+1);cls.next_version='.'.join(parts)
         cls.shared = tempfile.TemporaryDirectory()
         cls.base = Path(cls.shared.name)
         manager = cls.base/'manager.zip'
@@ -141,7 +144,7 @@ class StartupUpdateTests(unittest.TestCase):
     def test_real_preparation_without_network_preserves_data_and_records_baseline(self):
         candidate = self.root.with_name('candidate')
         with FileLock(self.root/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update.prepare_update(self.root,candidate,self.bundle,'v2.0.20')
+            update.prepare_update(self.root,candidate,self.bundle,self.tag)
         self.assertTrue((candidate/'data/installed-baseline.json').is_file())
         self.assertEqual((candidate/'.env').read_bytes(),(self.root/'.env').read_bytes())
         self.assertEqual(json.loads((candidate/'transition-report.json').read_text())['ready_for_pilot'],True)
@@ -150,7 +153,7 @@ class StartupUpdateTests(unittest.TestCase):
         import manual_update
         first = self.root.with_name('first')
         with FileLock(self.root/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update.prepare_update(self.root,first,self.bundle,'v2.0.20')
+            update.prepare_update(self.root,first,self.bundle,self.tag)
         (first/'prompts/bg.md').write_text('Local manager text',encoding='utf-8')
         with sqlite3.connect(first/'data/local.sqlite') as db:
             db.execute('CREATE TABLE after_first_update(value TEXT)')
@@ -162,7 +165,7 @@ class StartupUpdateTests(unittest.TestCase):
             target = package_source/name
             target.parent.mkdir(parents=True,exist_ok=True)
             shutil.copy2(ROOT/name,target)
-        (package_source/'version.txt').write_text('2.0.21')
+        (package_source/'version.txt').write_text(self.next_version)
         package = self.root.with_name('next-manager.zip')
         build_package(package_source,package)
         bundle_zip = self.root.with_name('next-transition.zip')
@@ -172,7 +175,7 @@ class StartupUpdateTests(unittest.TestCase):
         update.unpack_bundle(bundle_zip.read_bytes(),bundle)
         candidate = self.root.with_name('second')
         with FileLock(first/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update.prepare_update(first,candidate,bundle,'v2.0.21')
+            update.prepare_update(first,candidate,bundle,'v'+self.next_version)
         self.assertEqual((candidate/'prompts/bg.md').read_text('utf-8'),'Local manager text')
         with sqlite3.connect(candidate/'data/local.sqlite') as db:
             self.assertEqual(db.execute('SELECT value FROM after_first_update').fetchone()[0],'latest local data')
