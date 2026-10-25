@@ -7,11 +7,17 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from authority_store import AuthorityStore
 from sync_protocol import public_text
-from dialogue_knowledge import Evidence,KnowledgeAnswer,KnowledgeUnavailable
+from dialogue_knowledge import Evidence,KnowledgeAnswer,KnowledgeUnavailable,KnowledgeTransportUnavailable
 from dialogue_knowledge_protocol import make_request,read_response,KnowledgeBroker
 
 
 class KnowledgeProtocolTests(unittest.IsolatedAsyncioTestCase):
+    async def test_temporary_provider_failure_is_not_reported_as_missing_customer_knowledge(self):
+        self.provider.lookup.side_effect=KnowledgeUnavailable('Knowledge request failed: APITimeoutError')
+        request,private,packet=self.request()
+        response=await self.broker.handle(packet,account_id=42)
+        with self.assertRaises(KnowledgeTransportUnavailable):self.result(response,request,private)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.authority=AuthorityStore(Path(self.temp.name)/'center.sqlite')

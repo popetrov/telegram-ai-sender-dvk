@@ -12,7 +12,7 @@ import uuid
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from access_lease import canonical
 from sync_protocol import encrypt,decrypt,public_text,event_digest,b64
-from dialogue_knowledge import Evidence,KnowledgeAnswer,KnowledgeUnavailable
+from dialogue_knowledge import Evidence,KnowledgeAnswer,KnowledgeUnavailable,KnowledgeTransportUnavailable
 
 REQUEST_PROTOCOL='DVK_KNOWLEDGE_V1'
 RESPONSE_PROTOCOL='DVK_KNOWLEDGE_RESULT_V1'
@@ -59,6 +59,8 @@ def read_response(packet, *, request,private_key,signing_public_key,clock=time.t
             or content['subject']!=request['subject'] or content['request_digest']!=event_digest(request)
             or type(content['created_at']) is not int or abs(clock()-content['created_at'])>300):
         raise ValueError('Knowledge result belongs to another request or expired')
+    if content['error']=='provider_temporary':
+        raise KnowledgeTransportUnavailable('Center knowledge provider temporarily unavailable')
     if content['error'] is not None:
         raise KnowledgeUnavailable('Center knowledge unavailable')
     value=content['answer']
@@ -108,5 +110,9 @@ class KnowledgeBroker:
             # Revocation/expiry during an AI call also blocks the result.
             self.binding(payload,account_id)
             return response_packet(payload,signing_key=self.signing_key,answer=answer,clock=self.clock)
-        except (PermissionError,KnowledgeUnavailable):
+        except KnowledgeUnavailable as exc:
+            temporary=str(exc).startswith('Knowledge request failed:')
+            return response_packet(payload,signing_key=self.signing_key,
+                                   error='provider_temporary' if temporary else 'unavailable',clock=self.clock)
+        except PermissionError:
             return response_packet(payload,signing_key=self.signing_key,error='unavailable',clock=self.clock)

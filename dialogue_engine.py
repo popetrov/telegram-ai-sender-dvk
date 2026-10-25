@@ -8,7 +8,7 @@ from datetime import datetime
 import time
 import uuid
 import hashlib
-from dialogue_knowledge import KnowledgeUnavailable
+from dialogue_knowledge import KnowledgeUnavailable,KnowledgeTransportUnavailable
 from dialogue_store import StaleDialogue
 
 INTENTS={'opt_out','ready','need','call','documents','later','question','other'}
@@ -38,6 +38,7 @@ class DialogueEngine:
             raise StaleDialogue('Conversation changed during generation')
 
     def _handoff(self, thread, event, summary, event_key):
+        if event=='knowledge_missing':event_key+=':revision:'+str(thread['revision'])
         rule=self.policy.handoff(event)
         if event in {'need','call','documents'} and self.store.already_notified(thread['id'],event):
             return None
@@ -60,6 +61,8 @@ class DialogueEngine:
             return None
         try:
             decision=await self.analyst.analyze(thread=thread,history=history,now=int(self.clock()))
+        except KnowledgeTransportUnavailable:
+            raise
         except KnowledgeUnavailable:
             self._check(thread_id,thread['revision'])
             self._handoff(thread,'knowledge_missing','Не удалось надёжно разобрать ответ клиента. Нужна помощь менеджера.','knowledge_missing:'+key)
@@ -107,6 +110,8 @@ class DialogueEngine:
                                                   question=question,request_id=uuid.uuid4().hex)
             self._check(thread_id,thread['revision'])
             text=await self.writer.compose(thread=thread,history=history,decision=decision,knowledge=knowledge,stage=None)
+        except KnowledgeTransportUnavailable:
+            raise
         except KnowledgeUnavailable:
             self._check(thread_id,thread['revision'])
             self._handoff(thread,'knowledge_missing','В базе знаний не найден надёжный ответ. Нужна помощь менеджера.','knowledge_missing:'+key)
@@ -135,6 +140,8 @@ class DialogueEngine:
                                                   question='Какие подтверждённые возможности ДВК Финанс по этому продукту полезны клиенту?',request_id=uuid.uuid4().hex)
             self._check(thread_id,thread['revision'])
             text=await self.writer.compose(thread=thread,history=history,decision=None,knowledge=knowledge,stage=stage)
+        except KnowledgeTransportUnavailable:
+            raise
         except KnowledgeUnavailable:
             self._check(thread_id,thread['revision'])
             self._handoff(thread,'knowledge_missing','Не удалось подготовить напоминание на основе базы знаний.','knowledge_missing:'+key)
@@ -154,6 +161,8 @@ class DialogueEngine:
                 question='Какие подтверждённые возможности по продукту полезны при возобновлении обсуждения?',request_id=uuid.uuid4().hex)
             self._check(thread_id,thread['revision'])
             text=await self.writer.compose(thread=thread,history=history,decision=None,knowledge=knowledge,stage='agreed_return')
+        except KnowledgeTransportUnavailable:
+            raise
         except KnowledgeUnavailable:
             self._check(thread_id,thread['revision'])
             self._handoff(thread,'knowledge_missing','Не удалось подготовить согласованное возвращение к клиенту.','knowledge_missing:'+key)

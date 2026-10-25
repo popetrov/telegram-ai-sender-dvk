@@ -5,6 +5,32 @@ from dialogue_store import DialogueStore,StaleDialogue
 
 
 class DialogueStoreTests(unittest.TestCase):
+    def failed_reminder(self):
+        revision=self.history()
+        self.store.handoff(self.thread,event_key='knowledge_missing:reminder:1',event_type='knowledge_missing',
+            summary='Could not prepare reminder',pause=True,expected_revision=revision)
+
+    def test_recover_only_untouched_reminder_error_and_preserve_audit(self):
+        self.failed_reminder()
+        self.assertEqual(self.store.recover_failed_reminders(account_id=42,manager_id='manager_001',dry_run=True),[self.thread])
+        self.assertEqual(self.store.thread(self.thread)['state'],'human')
+        self.assertEqual(self.store.recover_failed_reminders(account_id=42,manager_id='manager_001'),[self.thread])
+        self.assertEqual(self.store.thread(self.thread)['state'],'waiting')
+        self.assertEqual(self.store.recover_failed_reminders(account_id=42,manager_id='manager_001'),[])
+
+    def test_manual_pause_or_client_message_is_not_recovered(self):
+        self.failed_reminder()
+        thread=self.store.thread(self.thread)
+        self.store.manager_control(self.thread,actor_account_id=42,manager_id='manager_001',command='pause',expected_revision=thread['revision'])
+        self.assertEqual(self.store.recover_failed_reminders(account_id=42,manager_id='manager_001'),[])
+
+    def test_optout_and_foreign_manager_are_not_recovered(self):
+        self.failed_reminder()
+        self.assertEqual(self.store.recover_failed_reminders(account_id=43,manager_id='manager_001'),[])
+        thread=self.store.thread(self.thread)
+        self.store.set_state(self.thread,'opt_out',expected_revision=thread['revision'])
+        self.assertEqual(self.store.recover_failed_reminders(account_id=42,manager_id='manager_001'),[])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.path=Path(self.temp.name)/'dialogue.sqlite'

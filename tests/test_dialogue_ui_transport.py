@@ -11,11 +11,32 @@ from dialogue_store import DialogueStore
 from dialogue_manager_ui import register,deliver_notices
 from dialogue_knowledge import Evidence,KnowledgeAnswer
 from dialogue_knowledge_protocol import KnowledgeBroker,RESPONSE_PROTOCOL
-from dialogue_knowledge_transport import RemoteKnowledge
+from dialogue_knowledge_transport import RemoteKnowledge,register_receiver
 from sync_protocol import public_text
 
 
 class UITransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_private_chat_reply_explicitly_binds_knowledge_result_to_request(self):
+        from datetime import datetime,timezone
+        from telegram import Message,Chat,Document,User
+        document=Document('file','unique',file_size=100)
+        network=Object(defaults=None,get_file=AsyncMock(return_value=Object(download_as_bytearray=AsyncMock(return_value=b'packet'))),
+                       send_document=AsyncMock())
+        document.set_bot(network)
+        message=Message(100,datetime.now(timezone.utc),Chat(42,'private'),document=document)
+        message.set_bot(network)
+        tasks=[]
+        def create(coro,**kwargs):tasks.append(asyncio.create_task(coro))
+        app=Object(add_handler=Mock(),create_task=create)
+        broker=Object(handle=AsyncMock(return_value=b'signed-encrypted-result'))
+        register_receiver(app,broker)
+        receive=app.add_handler.call_args.args[0].callback
+        await receive(Object(effective_message=message,effective_chat=message.chat,effective_user=User(42,'Owner',False)),None)
+        await asyncio.gather(*tasks)
+        parameters=network.send_document.call_args.kwargs['reply_parameters']
+        self.assertIsNotNone(parameters)
+        self.assertEqual(parameters.message_id,100)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         root=Path(self.temp.name)

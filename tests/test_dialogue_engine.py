@@ -8,10 +8,25 @@ from unittest.mock import AsyncMock,Mock
 from dialogue_policy import DialoguePolicy
 from dialogue_store import DialogueStore,StaleDialogue
 from dialogue_engine import DialogueEngine
-from dialogue_knowledge import KnowledgeUnavailable
+from dialogue_knowledge import KnowledgeUnavailable,KnowledgeTransportUnavailable
 
 
 class EngineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transport_outage_does_not_mark_individual_customer_for_manual_review(self):
+        self.knowledge.lookup.side_effect=KnowledgeTransportUnavailable('Temporary center outage')
+        with self.assertRaises(KnowledgeTransportUnavailable):await self.engine.on_silence(self.thread)
+        self.assertEqual(self.store.thread(self.thread)['state'],'waiting')
+        self.assertEqual(self.store.pending_notices(42),[])
+        self.writer.compose.assert_not_awaited()
+
+    async def test_recovered_reminder_can_pause_again_without_losing_new_failure(self):
+        self.knowledge.lookup.side_effect=KnowledgeUnavailable('No verified evidence')
+        await self.engine.on_silence(self.thread)
+        self.assertEqual(self.store.recover_failed_reminders(account_id=42,manager_id='manager_001'),[self.thread])
+        await self.engine.on_silence(self.thread)
+        self.assertEqual(self.store.thread(self.thread)['state'],'human')
+        self.assertEqual(len(self.store.pending_notices(42)),1)
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.now=2000000

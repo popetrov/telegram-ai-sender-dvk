@@ -10,10 +10,15 @@ import json
 import math
 import copy
 import unicodedata
+import re
 
 
 class KnowledgeUnavailable(RuntimeError):
     pass
+
+
+class KnowledgeTransportUnavailable(KnowledgeUnavailable):
+    """Infrastructure failure: retry later, never classify it as a customer's missing knowledge."""
 
 
 @dataclass(frozen=True)
@@ -38,8 +43,8 @@ ANSWER_SCHEMA={
         'answer':{'type':'string'},
         'citations':{'type':'array','items':{
             'type':'object','additionalProperties':False,
-            'properties':{'evidence_id':{'type':'string'},'quote':{'type':'string'}},
-            'required':['evidence_id','quote']}}
+            'properties':{'evidence_id':{'type':'string'},'quote_id':{'type':'string'}},
+            'required':['evidence_id','quote_id']}}
     },
     'required':['answerable','answer','citations']
 }
@@ -54,6 +59,9 @@ INSTRUCTIONS='''Ты извлекаешь знания выбранного би
 При answerable=true дай краткий ответ и минимум одну дословную цитату из
 конкретного evidence_id, которая подтверждает ответ. Ответ не адресован клиенту:
 не обращайся к Паше/менеджеру и не добавляй рекламный текст или отработку возражений.
+Подтверждающую цитату выбирай из quote_options соответствующего фрагмента и
+возвращай только её quote_id. Текст цитаты берётся из документа программой;
+не создавай новые идентификаторы и не объединяй разные отрывки.
 '''
 
 
@@ -62,6 +70,17 @@ def source_quote_matches(quote,text):
     normalize=lambda value:' '.join(unicodedata.normalize('NFC',value).split())
     needle=normalize(quote)
     return len(needle)>=10 and needle in normalize(text)
+
+
+def exact_quote_options(text):
+    """Bounded verbatim choices: structured output cannot paraphrase a citation."""
+    parts=[m.group().strip() for m in re.finditer(r'[^\n.!?]{10,}(?:[.!?]|$)',text)]
+    if not parts:parts=[text]
+    # Bound the additional model context; source strings never enter schema enums.
+    parts=[part[:120] for part in parts if len(part.strip())>=10]
+    if len(parts)>8:
+        parts=[parts[i*(len(parts)-1)//7] for i in range(8)]
+    return list(dict.fromkeys(parts))
 
 
 class VectorKnowledge:
@@ -104,10 +123,15 @@ class VectorKnowledge:
                     raise KnowledgeUnavailable('No relevant knowledge evidence')
                 schema=copy.deepcopy(ANSWER_SCHEMA)
                 schema['properties']['citations']['items']['properties']['evidence_id']['enum']=[e.id for e in evidence]
+                options={e.id:exact_quote_options(e.text) for e in evidence}
+                quotes={f'{e.id}:{i+1}':(e,q) for e in evidence for i,q in enumerate(options[e.id])}
+                if not quotes:raise KnowledgeUnavailable('No extractable source quotes')
+                schema['properties']['citations']['items']['properties']['quote_id']['enum']=list(quotes)
                 response=await self.client.responses.create(
                     model=self.model,store=False,instructions=INSTRUCTIONS,
                     input=json.dumps(dict(product=product,question=question,
-                                          evidence=[dict(id=e.id,text=e.text) for e in evidence]),ensure_ascii=False),
+                                          evidence=[dict(id=e.id,text=e.text,quote_options=[dict(quote_id=f'{e.id}:{i+1}',text=q)
+                                                    for i,q in enumerate(options[e.id])]) for e in evidence]),ensure_ascii=False),
                     text={'format':{'type':'json_schema','name':'grounded_knowledge_answer',
                                     'strict':True,'schema':schema}})
                 if getattr(response,'status',None)!='completed':
@@ -121,11 +145,11 @@ class VectorKnowledge:
                 by_id={e.id:e for e in evidence}
                 used=[]
                 for citation in answer['citations']:
-                    if not isinstance(citation,dict) or set(citation)!={'evidence_id','quote'}:
+                    if not isinstance(citation,dict) or set(citation)!={'evidence_id','quote_id'}:
                         raise KnowledgeUnavailable('Invalid knowledge citation')
                     item=by_id.get(citation['evidence_id'])
-                    quote=citation['quote']
-                    if item is None or not source_quote_matches(quote,item.text):
+                    chosen=quotes.get(citation['quote_id'])
+                    if item is None or chosen is None or chosen[0].id!=item.id or not source_quote_matches(chosen[1],item.text):
                         raise KnowledgeUnavailable('Knowledge citation does not match source')
                     if item not in used:
                         used.append(item)

@@ -2,7 +2,7 @@
 import asyncio
 import io
 import logging
-from dialogue_knowledge import KnowledgeUnavailable
+from dialogue_knowledge import KnowledgeUnavailable,KnowledgeTransportUnavailable
 from dialogue_knowledge_protocol import REQUEST_PROTOCOL,RESPONSE_PROTOCOL,make_request,read_response
 from sync_protocol import MAX_PACKET
 
@@ -47,7 +47,7 @@ class RemoteKnowledge:
                 import bot
                 if isinstance(exc,PeerFloodError):bot.pause_for_spam()
                 else:bot.pause_for_flood(exc)
-            raise KnowledgeUnavailable('Center knowledge request failed: '+type(exc).__name__) from None
+            raise KnowledgeTransportUnavailable('Center knowledge request failed: '+type(exc).__name__) from None
 
 
 def register_receiver(application,broker):
@@ -65,7 +65,7 @@ def register_receiver(application,broker):
             async with semaphore:
                 result=await broker.handle(raw,account_id=update.effective_user.id)
             stream=io.BytesIO(result);stream.name='knowledge-result.dvk'
-            await update.effective_message.reply_document(stream,caption=RESPONSE_PROTOCOL,disable_notification=True,
+            await update.effective_message.reply_document(stream,caption=RESPONSE_PROTOCOL,disable_notification=True,do_quote=True,
                                                            connect_timeout=15,read_timeout=45,write_timeout=45)
         except Exception as exc:
             log.warning('Knowledge exchange interrupted (%s)',type(exc).__name__)

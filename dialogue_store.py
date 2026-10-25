@@ -320,6 +320,30 @@ class DialogueStore:
         with self.connection() as db:
             return [dict(r) for r in db.execute('SELECT * FROM dialogue_threads WHERE account_id=?',(account_id,))]
 
+    def recover_failed_reminders(self, *, account_id,manager_id,dry_run=False):
+        """Recover only untouched infrastructure-era reminder pauses, never manual/client stops."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            rows=db.execute('''SELECT t.* FROM dialogue_threads t WHERE t.account_id=? AND t.manager_id=?
+                AND t.state='human' AND t.history_complete=1
+                AND EXISTS(SELECT 1 FROM dialogue_notices n WHERE n.thread_id=t.id
+                    AND n.event_type='knowledge_missing' AND n.event_key LIKE 'knowledge_missing:reminder:%'
+                    AND n.status IN ('pending','delivered'))
+                AND NOT EXISTS(SELECT 1 FROM dialogue_notices n WHERE n.thread_id=t.id
+                    AND (n.event_type!='knowledge_missing' OR n.status='handled'))
+                AND NOT EXISTS(SELECT 1 FROM dialogue_messages m WHERE m.thread_id=t.id
+                    AND m.sent_at>=t.first_sent_at AND (m.direction='incoming' OR m.telegram_id!=t.first_message_id))
+                AND NOT EXISTS(SELECT 1 FROM dialogue_actions a WHERE a.thread_id=t.id
+                    AND a.status IN ('sending','uncertain','sent'))''',(account_id,manager_id)).fetchall()
+            ids=[r['id'] for r in rows]
+            if not dry_run:
+                for thread_id in ids:
+                    db.execute("UPDATE dialogue_threads SET state='waiting',next_contact_at=NULL,revision=revision+1,updated_at=? WHERE id=?",
+                               (int(self.clock()),thread_id))
+                    db.execute("UPDATE dialogue_notices SET status='handled' WHERE thread_id=? AND event_type='knowledge_missing'",
+                               (thread_id,))
+            return ids
+
     def pending_actions(self, account_id):
         with self.connection() as db:
             return [dict(r) for r in db.execute('''SELECT a.* FROM dialogue_actions a

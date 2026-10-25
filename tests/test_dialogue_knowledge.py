@@ -2,14 +2,14 @@ import json
 from types import SimpleNamespace as Object
 import unittest
 from unittest.mock import AsyncMock
-from dialogue_knowledge import VectorKnowledge,KnowledgeUnavailable,source_quote_matches
+from dialogue_knowledge import VectorKnowledge,KnowledgeUnavailable,source_quote_matches,exact_quote_options
 
 
 class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.text='Решение о выдаче банковской гарантии принимает банк.'
         row=Object(score=0.9,file_id='file-test',filename='knowledge.txt',content=[Object(type='text',text=self.text)])
-        self.response=dict(answerable=True,answer=self.text,citations=[dict(evidence_id='1',quote=self.text)])
+        self.response=dict(answerable=True,answer=self.text,citations=[dict(evidence_id='1',quote_id='1:1')])
         self.client=Object(vector_stores=Object(search=AsyncMock(return_value=Object(data=[row]))),
                            responses=Object(create=AsyncMock(side_effect=lambda **kw:Object(status='completed',output_text=json.dumps(self.response)))))
         self.adapter=VectorKnowledge(self.client,business_id='dvk_finance',products=['БГ','Кредит'],vector_store_id='vs-test')
@@ -29,6 +29,20 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(source_quote_matches('Предоставьте ИНН и сумму гарантии','Предоставьте\nИНН\tи сумму\u00a0гарантии'))
         self.assertFalse(source_quote_matches('Комиссия составляет 1 процент','Комиссия составляет 5 процентов'))
 
+    async def test_citation_strings_are_constrained_to_real_source_excerpts(self):
+        await self.adapter.lookup(**self.query)
+        call=self.client.responses.create.call_args.kwargs
+        choices=call['text']['format']['schema']['properties']['citations']['items']['properties']['quote_id']['enum']
+        self.assertEqual(choices,['1:1'])
+        options=json.loads(call['input'])['evidence'][0]['quote_options']
+        self.assertEqual(options,[dict(quote_id='1:1',text=self.text)])
+
+    def test_quote_choices_are_bounded_verbatim_and_keep_actual_numbers(self):
+        source='\n'.join(f'Условие банка номер {n}: комиссия составляет {n} процентов.' for n in range(100))
+        quotes=exact_quote_options(source)
+        self.assertLessEqual(len(quotes),12)
+        self.assertTrue(all(len(q)<=400 and source_quote_matches(q,source) for q in quotes))
+
     async def test_unknown_business_or_product_is_rejected_before_network(self):
         for patch in ({'business_id':'other'},{'product':'Николай'}):
             with self.assertRaises(PermissionError):await self.adapter.lookup(**{**self.query,**patch})
@@ -40,7 +54,8 @@ class KnowledgeTests(unittest.IsolatedAsyncioTestCase):
         self.client.responses.create.assert_not_awaited()
 
     async def test_invented_source_or_quote_is_rejected(self):
-        for citations in ([dict(evidence_id='99',quote=self.text)],[dict(evidence_id='1',quote='Guaranteed bank approval')],[]):
+        for citations in ([dict(evidence_id='99',quote_id='1:1')],[dict(evidence_id='1',quote_id='fake')],
+                          [dict(evidence_id='1',quote='Guaranteed bank approval')],[]):
             self.response['citations']=citations
             with self.assertRaises(KnowledgeUnavailable):await self.adapter.lookup(**self.query)
 

@@ -16,7 +16,7 @@ from dialogue_policy import DialoguePolicy
 from dialogue_store import DialogueStore,StaleDialogue
 from dialogue_engine import DialogueEngine
 from dialogue_ai import DialogueAI
-from dialogue_knowledge import KnowledgeUnavailable
+from dialogue_knowledge import KnowledgeUnavailable,KnowledgeTransportUnavailable
 from dialogue_knowledge_transport import RemoteKnowledge
 from dialogue_manager_ui import register as register_ui,deliver_notices,controls
 from dialogue_send_gate import DeliveryGate
@@ -224,6 +224,8 @@ class DialogueRuntime:
                 elif decision['intent']=='later' and type(decision.get('return_at')) is int and decision['return_at']>time.time():
                     self.store.set_state(self.thread_id,'later',expected_revision=thread['revision'],next_contact_at=decision['return_at'])
                 else:manual('Нужно ручное рассмотрение существующего диалога: '+decision['summary'])
+            except KnowledgeTransportUnavailable:
+                raise
             except KnowledgeUnavailable:
                 manual('Нужно ручное рассмотрение: не удалось надёжно разобрать существующую переписку. Клиенту ничего не отправлено.')
         with self.store.connection() as db:
@@ -356,6 +358,9 @@ class DialogueRuntime:
                     bot.pause_for_spam()
                 except FloodWaitError as exc:
                     bot.pause_for_flood(exc)
+                except KnowledgeTransportUnavailable as exc:
+                    log.warning('Knowledge infrastructure unavailable (%s); retry in 60 seconds',str(exc))
+                    await asyncio.sleep(60)
                 except Exception as exc:
                     log.warning('Dialogue paused (%s)',type(exc).__name__)
                     thread,_=self.store.snapshot(self.thread_id)
@@ -401,7 +406,7 @@ class SelectedQueueRuntime:
         worker=DialogueRuntime(self.client,self.application,self.root,
             {**self.settings,'peer_id':peer,'product':product},self.policy,self.ai_client,gate=self.gate)
         try:await worker.enroll()
-        except (DeletedHistory,AccessDenied,PeerFloodError,FloodWaitError):raise
+        except (DeletedHistory,AccessDenied,PeerFloodError,FloodWaitError,KnowledgeTransportUnavailable):raise
         except Exception:
             if worker.thread_id:
                 thread=worker.store.thread(worker.thread_id)
@@ -481,6 +486,8 @@ class SelectedQueueRuntime:
                             self.attempted.discard(peer);last_discovery=0;raise
                         except AccessDenied:
                             self.attempted.discard(peer);raise
+                        except KnowledgeTransportUnavailable:
+                            self.attempted.discard(peer);last_discovery=0;raise
                         except DeletedHistory:
                             self.deleted_count+=1
                         except Exception as exc:
@@ -504,6 +511,9 @@ class SelectedQueueRuntime:
                     bot.pause_for_spam()
                 except FloodWaitError as exc:
                     bot.pause_for_flood(exc)
+                except KnowledgeTransportUnavailable as exc:
+                    log.warning('Knowledge infrastructure unavailable (%s); retry in 60 seconds',str(exc))
+                    await asyncio.sleep(60)
                 except Exception as exc:
                     log.warning('Known-contact dialogue deferred (%s)',type(exc).__name__)
                     if worker is not None:
