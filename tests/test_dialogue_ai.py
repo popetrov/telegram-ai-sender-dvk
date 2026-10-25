@@ -30,6 +30,14 @@ class DialogueAITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['intent'],'opt_out')
         self.client.responses.create.assert_not_awaited()
 
+    async def test_request_to_write_briefly_is_not_treated_as_unsubscribe_by_regex(self):
+        history=[dict(telegram_id=1,direction='incoming',text='Не пишите так много, пожалуйста, отвечайте коротко',sent_at=100)]
+        self.client.responses.create.return_value=Object(status='completed',output_text=json.dumps(
+            dict(intent='other',summary='Asked for brief replies',knowledge_question='How to begin?',return_at=None)))
+        result=await self.ai.analyze(thread=dict(product='БГ'),history=history,now=1000)
+        self.assertEqual(result['intent'],'other')
+        self.client.responses.create.assert_awaited_once()
+
     async def test_malformed_decision_or_model_failure_requires_manager(self):
         self.client.responses.create.return_value=Object(status='completed',output_text='not-json')
         with self.assertRaises(KnowledgeUnavailable):

@@ -79,7 +79,9 @@ class DialogueAI:
 
     async def analyze(self, *, thread, history, now):
         incoming=[m for m in history if m['direction']=='incoming']
-        if incoming and re.search(r'не\s+пишите|не\s+писать|не\s+беспоко[йи]|удалите\s+(?:мой\s+)?(?:номер|контакт)',incoming[-1]['text'],re.I):
+        explicit_stop=(r'\s*(?:пожалуйста[,\s]*)?(?:больше\s+)?не\s+(?:пишите|писать|беспокойте|беспокоить)'
+                       r'(?:\s+(?:мне|нам))?(?:\s+(?:больше|сюда|вообще))?\s*[.!]*\s*')
+        if incoming and re.fullmatch(explicit_stop,incoming[-1]['text'],re.I):
             return dict(intent='opt_out',summary='Клиент попросил больше не писать.',knowledge_question='',return_at=None)
         context=await self.context(history,thread_id=thread.get('id'))
         raw=await self._response(self.prompts['analyst'],dict(product=thread['product'],now_utc=now,
