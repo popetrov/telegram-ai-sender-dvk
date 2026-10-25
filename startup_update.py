@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import urllib.error
 import uuid
 import zipfile
 
@@ -22,6 +23,7 @@ from file_lock import FileLock
 
 REPOSITORY = 'popetrov/telegram-ai-sender-dvk'
 API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
+LATEST_PAGE = f'https://github.com/{REPOSITORY}/releases/latest'
 MAX_BYTES = 64 * 1024 * 1024
 LEGACY_FILES = {'ai.py', 'arbitration_api.py', 'bot.py', 'database.py', 'launcher.py',
                 'main.py', 'products.json', 'updater.py', 'version.txt',
@@ -48,8 +50,24 @@ def fetch(url):
     return data
 
 
+def release_metadata():
+    try:return json.loads(fetch(API))
+    except (urllib.error.URLError,TimeoutError):
+        # GitHub's stable-latest permalink excludes prereleases. Do not use the
+        # Atom feed: a newer pilot there must never become a production update.
+        request=urllib.request.Request(LATEST_PAGE,headers={'User-Agent':'DVK-Startup'})
+        with urllib.request.urlopen(request,timeout=15) as response:
+            final=response.geturl()
+        match=re.fullmatch(re.escape(f'https://github.com/{REPOSITORY}/releases/tag/')+r'(v\d+\.\d+\.\d+)',final)
+        if not match:raise ValueError('Unexpected stable release redirect')
+        tag=match[1]
+        names=('dvk-transition-pilot.zip','dvk-transition-pilot.zip.sha256')
+        return dict(tag_name=tag,draft=False,prerelease=False,assets=[
+            dict(name=name,browser_download_url=f'https://github.com/{REPOSITORY}/releases/download/{tag}/{name}') for name in names])
+
+
 def latest_bundle(current):
-    release = json.loads(fetch(API))
+    release = release_metadata()
     if release.get('draft') or release.get('prerelease'):
         return None
     tag = release['tag_name']

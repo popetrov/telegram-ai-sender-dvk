@@ -85,6 +85,8 @@ def main():
     from build_startup_bridge import build
     version = (ROOT/'version.txt').read_text('utf-8-sig').strip()
     build(ROOT,args.output/'dvk-transition-pilot.zip',args.output/f'telegram_ai_sender_v{version}.zip')
+    from build_update_repair import build as build_repair
+    build_repair(ROOT,args.output/'DVK_UPDATE_REPAIR_WINDOWS.zip')
     print('Built center, manager and one-time transition pilot packages; no latest release changed.')
 
 
