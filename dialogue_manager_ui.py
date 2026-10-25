@@ -37,9 +37,19 @@ def register(application,store,*,account_id,manager_id):
     application.add_handler(CallbackQueryHandler(control,pattern=r'^dlg:'))
     async def status(update,context):
         if update.effective_user.id!=account_id or update.effective_chat.type!='private':return
-        for thread in store.threads(account_id):
+        threads=store.threads(account_id)
+        args=getattr(context,'args',None) or []
+        try:page=int(args[0]) if args else 1
+        except (ValueError,TypeError):page=1
+        pages=max(1,(len(threads)+9)//10);page=max(1,min(page,pages))
+        if len(threads)>10:
+            paused=sum(t['state'] in {'human','opt_out','closed'} for t in threads)
+            await update.effective_message.reply_text(
+                f'Диалогов: {len(threads)}. Включены: {len(threads)-paused}. На паузе или завершены: {paused}.\n'
+                f'Страница {page}/{pages}. Другая страница: /dialogues НОМЕР')
+        for thread in threads[(page-1)*10:page*10]:
             state=('на паузе' if thread['state']=='human' else 'запрещены клиентом' if thread['state']=='opt_out'
-                   else 'завершены' if thread['state']=='closed' else 'включены')
+                   else 'завершены' if thread['state']=='closed' else 'проверяется история' if not thread['history_complete'] else 'включены')
             await update.effective_message.reply_text(
                 f"{store.client_label(thread['id'])} · {thread['product']}\nАвтоответы: {state}.",
                 reply_markup=controls(thread['id'],thread['revision'],thread['state']))
