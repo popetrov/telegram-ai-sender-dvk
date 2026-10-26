@@ -32,7 +32,7 @@ class RepairTests(unittest.TestCase):
             self.assertIn(b'def release_metadata()', (target/'startup_update.py').read_bytes())
             self.assertEqual((target/'.env').read_bytes(),b'MANAGER_ID=manager_007\nAPI_PAIR=unchanged\n')
             self.assertEqual((target/'data/local.sqlite').read_bytes(),b'existing-business-data')
-            self.assertEqual(json.loads((target/'data/installed-baseline.json').read_text(encoding='utf-8'))['startup_update.py'],(target/'startup_update.py').read_text(encoding='utf-8'))
+            self.assertEqual(json.loads((target/'data/installed-baseline.json').read_text(encoding='utf-8'))['startup_update.py'],(target/'startup_update.py').read_bytes().decode('utf-8'))
 
     def test_running_program_is_rejected_before_replacing_any_files(self):
         with FileLock(self.root/'data/sender.lock'):
