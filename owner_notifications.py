@@ -8,6 +8,19 @@ from zoneinfo import ZoneInfo
 log = logging.getLogger(__name__)
 
 
+def manager_label(store, account_id):
+    """Owner-only identity from the internal card; never from manager input."""
+    if store is not None:
+        with store.connection() as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='manager_directory'").fetchone():
+                row = db.execute('SELECT d.full_name FROM manager_directory d JOIN managers m '
+                                 'ON m.account_id=d.account_id WHERE d.account_id=? AND m.company_id IS NOT NULL',
+                                 (account_id,)).fetchone()
+                if row and row['full_name'].strip():
+                    return f"{row['full_name']} (ID {account_id})"
+    return str(account_id)
+
+
 class OwnerNotifications:
     def __init__(self, store):
         self.store = store
@@ -25,7 +38,7 @@ class OwnerNotifications:
         now = int(time.time() if now is None else now)
         # At most one notice per component/account per hour, including restarts.
         key = f'error:{component}:{account_id}:{now//3600}'
-        who = f' Менеджер: {account_id}.' if account_id is not None else ''
+        who = f' Менеджер: {manager_label(self.store, account_id)}.' if account_id is not None else ''
         self.once(key, f'Ошибка: {component}.{who} Требуется проверить консоль центра. '
                   f'Тип: {type(exception).__name__}. Секреты и клиентские данные в уведомление не включены.', now)
 

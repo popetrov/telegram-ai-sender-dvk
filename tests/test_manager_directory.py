@@ -89,6 +89,19 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
             current=dict(original);validate_existing_number(current)
             self.assertEqual(current,original)
 
+    def test_owner_identity_uses_card_name_and_keeps_unknown_id(self):
+        from owner_notifications import manager_label,OwnerNotifications
+        self.assertEqual(manager_label(self.store,42),'42')
+        self.fill()
+        self.assertEqual(manager_label(self.store,42),'Private Name (ID 42)')
+        self.assertEqual(manager_label(self.store,999),'999')
+        notices=OwnerNotifications(self.store)
+        notices.error('test',ValueError('secret must not appear'),42,now=1)
+        with self.store.connection() as db:
+            text=db.execute('SELECT text FROM owner_notices').fetchone()['text']
+        self.assertIn('Private Name (ID 42)',text)
+        self.assertNotIn('secret must not appear',text)
+
     async def test_admin_only_wizard_and_service_lease_never_contains_directory(self):
         app=create_server('123:test',99,Ed25519PrivateKey.generate(),self.store,
                           role='admin',directory=self.directory)

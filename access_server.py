@@ -21,6 +21,7 @@ from telegram.request import HTTPXRequest
 
 from access_lease import issue
 from authority_store import AuthorityStore
+from owner_notifications import manager_label
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / "data/access_authority"
@@ -121,7 +122,7 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                 if allowed:
                     connection_key = f'connected:{subject}' + (f':{connection_id}' if connection_id else '')
                     notices.once(connection_key,
-                                 f'Менеджер {account_id} подключён. Доступ подтверждён центром.')
+                                 f'Менеджер {manager_label(store, account_id)} подключён. Доступ подтверждён центром.')
             elif new_request:
                 await context.bot.send_message(admin_id,
                     f"Новая установка: Telegram ID {account_id}\n"
@@ -190,7 +191,7 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
         if update.effective_user.id != admin_id or update.effective_chat.type != "private":
             return
         if store is not None:
-            lines = [f"{r['account_id']}: {r['company_id'] or 'ожидает'}; включён={bool(r['enabled'])}; {r['subject']}"
+            lines = [f"{manager_label(store, r['account_id'])}: {r['company_id'] or 'ожидает'}; включён={bool(r['enabled'])}; {r['subject']}"
                      for r in store.list_managers()]
         else:
             registry = load_registry()
