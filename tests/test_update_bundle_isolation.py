@@ -34,5 +34,5 @@ class BundleIsolationTests(unittest.TestCase):
             candidate=folder/'candidate'
             with patch.object(manual_update,'verify_package',side_effect=ValueError('Forbidden archive entry: DIALOGUES.md')):
                 startup_update.prepare_update(folder,candidate,bundle,'v2.0.23')
-            self.assertEqual(Path((candidate/'verified.txt').read_text('utf-8')),bundle/'manual_update.py')
+            self.assertEqual(Path((candidate/'verified.txt').read_text('utf-8')).resolve(),(bundle/'manual_update.py').resolve())
 
