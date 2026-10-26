@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import closing
 import base64
 import hashlib
 import importlib.util
@@ -129,9 +130,10 @@ class MigrationTests(unittest.TestCase):
 
     def session_fixture(self):
         self.session.unlink()
-        with sqlite3.connect(self.session) as db:
+        with closing(sqlite3.connect(self.session)) as db:
             db.execute('CREATE TABLE sessions(dc_id,server_address,port,auth_key)')
             db.execute('INSERT INTO sessions VALUES(?,?,?,?)',(2,'127.0.0.1',443,b'x'*256))
+            db.commit()
 
     def client_fixture(self,account=42,authorized=True):
         return Object(connect=AsyncMock(),disconnect=AsyncMock(),is_user_authorized=AsyncMock(return_value=authorized),get_me=AsyncMock(return_value=Object(id=account)))
