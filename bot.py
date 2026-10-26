@@ -45,6 +45,21 @@ from database import (
 from telegram_client import client as telegram_client
 from dialogue_store import require_contact_allowed, ContactOptOutError
 
+_sender_name_cache = None
+_sender_name_lock = asyncio.Lock()
+
+
+async def legal_sender_name():
+    global _sender_name_cache
+    async with _sender_name_lock:
+        if _sender_name_cache and time.monotonic()-_sender_name_cache[0] < 60:
+            return _sender_name_cache[1]
+        from ai import profile_first_name
+        me = await telegram_client.get_me()
+        name = profile_first_name(me.first_name)
+        _sender_name_cache = (time.monotonic(),name)
+        return name
+
 
 ALLOWED_USERS_FILE = Path("data/allowed_users.json")
 ACCESS_REQUESTS_FILE = Path("data/access_requests.json")
@@ -1119,6 +1134,10 @@ async def prepare_one_client(
         )
 
     try:
+        sender_fields = {}
+        from ai import normalize_product
+        if normalize_product(product) in {'Право_ООО','Право_ИП'}:
+            sender_fields['sender_name'] = await legal_sender_name()
         analysis = await asyncio.to_thread(
             generate_company_analysis,
             inn,
@@ -1126,6 +1145,7 @@ async def prepare_one_client(
             username,
             product,
             fields=row.get("fields"),
+            **sender_fields,
         )
     except Exception as exc:
         return (

@@ -10,6 +10,18 @@ BASE_DIR = Path(__file__).resolve().parent
 PRODUCTS_FILE = BASE_DIR / "products.json"
 
 
+def profile_first_name(value):
+    """Use only the first name-like token; never include profile advertising."""
+    import re
+    text = str(value or '').strip()
+    text = re.split(r'[|/•·\n\r,;:@()]|https?://', text, maxsplit=1)[0]
+    names = re.findall(r"[A-Za-zА-Яа-яЁё]+(?:[-’'][A-Za-zА-Яа-яЁё]+)*", text)
+    for name in names:
+        if name.casefold() not in {'двк','dvk','право','финанс','ооо','ип','менеджер'} and len(name)>1:
+            return name
+    raise ValueError('Не удалось определить имя отправителя. Укажите имя в профиле Telegram.')
+
+
 def get_catalog():
     import os
     from product_catalog import ProductCatalog
@@ -98,6 +110,7 @@ def generate_company_analysis(
     username,
     product,
     fields=None,
+    sender_name=None,
 ):
     from context_adapters import apply_context_adapters
     catalog = get_catalog()
@@ -109,6 +122,16 @@ def generate_company_analysis(
     prompt_file = settings["prompt"]
     prompt_text = catalog.render(normalized_product, inputs)
     prompt_text = apply_context_adapters(settings["context_adapters"], prompt_text, inputs)
+    if normalized_product in {'Право_ООО','Право_ИП'}:
+        import re
+        if not sender_name:
+            raise ValueError('Не получено имя отправителя из Telegram-профиля.')
+        name = profile_first_name(sender_name)
+        prompt_text = re.sub(r'Сергей|\[ИМЯ ОТПРАВИТЕЛЯ\]', lambda _: name, prompt_text)
+        prompt_text += ('\n\nПРОВЕРЕННОЕ ИМЯ ОТПРАВИТЕЛЯ: '+name+
+                        '\nПредставляй отправителя только этим именем. Не добавляй фамилию, '
+                        'отчество, должность или рекламу из профиля Telegram. '
+                        'ФИО клиента не является именем отправителя.\n')
 
     if not config.OPENAI_API_KEY:
         raise RuntimeError(

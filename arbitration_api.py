@@ -1,4 +1,5 @@
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -101,6 +102,12 @@ def _find_party_by_identity(search_parties, detailed_parties, target_inn):
     if not isinstance(detailed_parties, list):
         return None
 
+    if len(target_inn) == 12:
+        # Some IP cards expose the INN only in the detailed response.
+        for party in detailed_parties:
+            if isinstance(party,dict) and _normalize_inn(party.get('Inn')) == target_inn:
+                return party
+
     for search_party in search_parties:
         if not isinstance(search_party, dict):
             continue
@@ -123,7 +130,18 @@ def _find_party_by_identity(search_parties, detailed_parties, target_inn):
             if not search_name or not detailed_name:
                 continue
 
-            if search_name != detailed_name:
+            if len(target_inn) == 12:
+                # An explicit different INN always outweighs a matching name.
+                detail_inn = _normalize_inn(detailed_party.get('Inn'))
+                if detail_inn and detail_inn != target_inn:
+                    continue
+                def ip_name(value):
+                    value=re.sub(r'\bиндивидуальный предприниматель\b|\bип\b',' ',value)
+                    return ' '.join(value.replace('ё','е').split())
+                names_match = ip_name(search_name) == ip_name(detailed_name)
+            else:
+                names_match = search_name == detailed_name
+            if not names_match:
                 continue
 
             # Если адрес есть в обеих карточках, он также должен совпасть.
@@ -311,7 +329,8 @@ def find_latest_defendant_case(inn: str) -> dict:
 
             respondents = case.get("Respondents") or []
 
-            if _party_has_inn(respondents, target_inn):
+            if _party_has_inn(respondents, target_inn) or (len(target_inn)==12 and any(
+                    isinstance(p,dict) and not _normalize_inn(p.get('Inn')) for p in respondents)):
                 defendant_cases.append(case)
 
         if not defendant_cases:
