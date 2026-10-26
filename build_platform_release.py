@@ -87,6 +87,12 @@ def main():
     build(ROOT,args.output/'dvk-transition-pilot.zip',args.output/f'telegram_ai_sender_v{version}.zip')
     from build_update_repair import build as build_repair
     build_repair(ROOT,args.output/'DVK_UPDATE_REPAIR_WINDOWS.zip')
+    from build_fresh_installer import build as build_fresh
+    for platform in ('windows','macos','linux'):
+        build_fresh(ROOT,args.output/'dvk-manager-pilot.zip',args.output/f'DVK_INSTALL_{platform.upper()}.zip',platform)
+    guide=(ROOT/'docs/install/Установка Telegram AI Sender.pdf').read_bytes()
+    (args.output/'DVK_INSTALL_GUIDE_RU.pdf').write_bytes(guide)
+    (args.output/'DVK_INSTALL_GUIDE_RU.pdf.sha256').write_text(hashlib.sha256(guide).hexdigest()+'  DVK_INSTALL_GUIDE_RU.pdf\n',encoding='ascii')
     print('Built center, manager and one-time transition pilot packages; no latest release changed.')
 
 
