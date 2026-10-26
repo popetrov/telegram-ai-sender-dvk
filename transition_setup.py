@@ -55,6 +55,16 @@ def validate_public(public):
             raise ValueError('Некорректный публичный ключ центра')
 
 
+def same_legacy_runtime(name, actual, expected):
+    actual,expected=normalized(actual),normalized(expected)
+    if actual==expected:return True
+    if name!='bot.py':return False
+    # Recognize only the known one-line 10 -> 1 research setting variant.
+    pattern=rb'(?m)^MAX_PARALLEL_RESEARCH = (?:1|10)$'
+    if len(re.findall(pattern,actual))!=1 or len(re.findall(pattern,expected))!=1:return False
+    return re.sub(pattern,b'MAX_PARALLEL_RESEARCH = 1',actual)==re.sub(pattern,b'MAX_PARALLEL_RESEARCH = 1',expected)
+
+
 def inspect_source(source, baselines):
     source = Path(source).resolve()
     version = (source/'version.txt').read_text('utf-8-sig').strip()
@@ -66,12 +76,18 @@ def inspect_source(source, baselines):
         if not path.is_file() or path.is_symlink():
             raise ValueError('Отсутствует или небезопасен файл старой установки: '+name)
         content = normalized(path.read_bytes())
-        if not any(name in p['files'] and normalized(p['files'][name].encode('utf-8')) == content for p in profiles):
+        if not any(name in p['files'] and same_legacy_runtime(name,content,p['files'][name].encode('utf-8')) for p in profiles):
             raise ValueError('В старой программе изменён '+name+'. Нужна отдельная проверка; файл не перезаписан.')
     # Prefer the matching macOS profile when its launcher differs from Windows.
     profile = max(profiles,key=lambda p:sum(
         normalized((source/name).read_bytes()) == normalized(p['files'].get(name,'').encode('utf-8')) for name in CORE))
     def baseline(root,name):
+        if name=='bot.py':
+            local=(source/name).read_bytes()
+            if any(same_legacy_runtime(name,local,p['files'].get(name,'').encode('utf-8')) for p in profiles):
+                # Treat the reviewed setting variant as this installation's base,
+                # so obsolete code is replaced rather than preserved as a conflict.
+                return local
         original = manual_update.git_baseline(root,name)
         if original is not manual_update.MISSING:
             return original

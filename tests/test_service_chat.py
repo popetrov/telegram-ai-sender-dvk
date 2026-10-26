@@ -49,7 +49,7 @@ class ServiceChatTests(unittest.IsolatedAsyncioTestCase):
         await runtime.cleanup_service_messages(client,'center',self.message('service'))
         self.store.require_access()
 
-    async def test_refresh_deletes_pair_only_after_verified_lease_is_saved(self):
+    async def test_refresh_preserves_messages_and_saves_verified_lease(self):
         envelope = issue(self.key,subject='m:42',nonce='a'*48,allowed=True,now=100)
         response = self.message('DVK_ACCESS '+json.dumps(envelope), ident=2)
         conversation = SimpleNamespace(send_message=AsyncMock(return_value=self.message('request')),
@@ -65,7 +65,7 @@ class ServiceChatTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(conversation=Mock(return_value=manager), delete_messages=AsyncMock(side_effect=delete))
         with patch('access_runtime.secrets.token_hex',return_value='a'*48):
             await runtime.refresh(client,'center',self.store)
-        client.delete_messages.assert_awaited_once()
+        client.delete_messages.assert_not_awaited()
         self.assertTrue(conversation.send_message.call_args.kwargs['silent'])
         self.store.connection_id = 'b'*32
         client.delete_messages.reset_mock()
@@ -82,4 +82,4 @@ class ServiceChatTests(unittest.IsolatedAsyncioTestCase):
                 yield message
         client = SimpleNamespace(iter_messages=history, delete_messages=AsyncMock())
         await runtime.clean_service_history(client,'center',self.store)
-        client.delete_messages.assert_awaited_once_with('center',[2],revoke=True)
+        client.delete_messages.assert_not_awaited()

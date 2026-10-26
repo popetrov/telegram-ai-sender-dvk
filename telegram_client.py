@@ -1,4 +1,4 @@
-from telethon import TelegramClient
+from safe_telegram import ProtectedTelegramClient as TelegramClient
 from telethon.tl.functions.messages import GetDialogFiltersRequest
 from telethon.tl.types import DialogFilter
 
@@ -22,6 +22,8 @@ async def connect():
     from app_profile_client import check_account
     from pathlib import Path
     check_account(Path(__file__).resolve().parent,me.id)
+    from account_guard import claim_account
+    claim_account(me.id)
 
     print("=== TELEGRAM CONNECTION TEST ===")
     print(f"User ID: {me.id}")
@@ -106,5 +108,8 @@ async def test_client_folders():
 
 
 async def disconnect():
-    if client.is_connected():
-        await client.disconnect()
+    from account_guard import release_account
+    try:
+        if client.is_connected():
+            await client.disconnect()
+    finally:release_account()

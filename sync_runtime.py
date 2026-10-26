@@ -101,7 +101,6 @@ async def start(client):
                                         break
                                     except Exception:
                                         continue
-                            await cleanup_service_messages(client, authority, sent, response)
                     await asyncio.sleep(2)
                 with get_connection() as db:
                     acknowledge_transfer(db, event_ids)

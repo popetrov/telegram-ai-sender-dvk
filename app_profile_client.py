@@ -60,7 +60,7 @@ def accept(root,key,packet,request,public,account=None):
 
 async def direct(root,values,request,public):
     """Copy only the auth key to memory. Never open a writable manager session."""
-    from telethon import TelegramClient
+    from safe_telegram import ProtectedTelegramClient as TelegramClient
     from telethon.sessions import MemorySession
     from telethon.crypto import AuthKey
     name=values.get('SESSION_NAME','telegram_sender')
@@ -77,15 +77,14 @@ async def direct(root,values,request,public):
             await client.connect()
             if not await client.is_user_authorized():raise ValueError('Session not authorized')
             me=await client.get_me();bot=await client.get_entity(public['service_bot'])
+            from account_guard import claim_account
+            claim_account(me.id)
             if not bot.bot:raise ValueError('Service is not a bot')
             async with client.conversation(bot,timeout=25,exclusive=True) as conversation:
                 sent=await conversation.send_message('/app_profile '+base64.urlsafe_b64encode(canonical(request)).decode())
                 reply=await conversation.get_response(sent)
                 if not (reply.raw_text or '').startswith('DVK_APP '):raise ValueError('Profile not approved')
                 packet=json.loads(reply.raw_text[len('DVK_APP '):])
-                # Only this request and its response, never unrelated technical history.
-                try:await client.delete_messages(bot,[sent.id,reply.id])
-                except Exception:pass
                 return packet,me.id
     finally:
         try:
@@ -118,6 +117,9 @@ def prepare(root,*,sender_lock_held=False):
         public=public_config(root)
         binding=cached_binding(root,public)
         if binding:
+            from account_guard import claim_account
+            claim_account(binding['payload']['account_id'])
+        if binding:
             profile=root/'data/telegram-app-profile.private.json'
             payload=read_profile(profile,PROFILE_SIGNING_PUBLIC_KEY)
             if binding['payload']['profile']['payload']!=payload:raise ValueError('Profile binding mismatch')
@@ -127,6 +129,8 @@ def prepare(root,*,sender_lock_held=False):
             profile=accept(root,key,packet,request,public,account)
         else:
             profile=fresh(root,values,public)
+            from account_guard import claim_account
+            claim_account(cached_binding(root,public)['payload']['account_id'])
         payload=read_profile(profile,PROFILE_SIGNING_PUBLIC_KEY)
         pair=(payload['api_id'],payload['api_hash'])
         same=str(pair[0])==values.get('TELEGRAM_API_ID') and pair[1]==values.get('TELEGRAM_API_HASH')

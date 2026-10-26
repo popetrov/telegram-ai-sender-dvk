@@ -36,8 +36,6 @@ class RemoteKnowledge:
                             raw=await self.client.download_media(response,file=bytes)
                             result=read_response(raw,request=request,private_key=private,signing_public_key=self.signing_public_key)
                             self.require_access()
-                            from access_runtime import cleanup_service_messages
-                            await cleanup_service_messages(self.client,self.authority,sent,response)
                             return result
         except KnowledgeUnavailable:
             raise

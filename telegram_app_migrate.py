@@ -144,7 +144,7 @@ async def probe_existing_session(root,values,old,new):
     Never calls start/sign_in/send_code_request/qr_login, and never writes a
     manager's SQLite session. Any network/auth error leaves their .env untouched.
     """
-    from telethon import TelegramClient
+    from safe_telegram import ProtectedTelegramClient as TelegramClient
     from telethon.crypto import AuthKey
     from telethon.sessions import MemorySession
     name=values.get('SESSION_NAME','telegram_sender')
@@ -185,7 +185,8 @@ async def probe_application_pair(pair):
     A short-lived login token is neither shown nor accepted and is discarded.
     No user account is authorized and no persistent session is created.
     """
-    from telethon import TelegramClient,functions,types
+    from telethon import functions,types
+    from safe_telegram import ProtectedTelegramClient as TelegramClient
     from telethon.sessions import MemorySession
     pair=validate_pair(*pair)
     client=TelegramClient(MemorySession(),*pair,receive_updates=False,connection_retries=0,request_retries=0)

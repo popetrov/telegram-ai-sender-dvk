@@ -13,7 +13,8 @@ ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "").strip()
 # TELEGRAM
 # =========================
 
-TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID"))
+_telegram_api_id = os.getenv("TELEGRAM_API_ID", "").strip()
+TELEGRAM_API_ID = int(_telegram_api_id) if _telegram_api_id else None
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 TELEGRAM_PHONE = os.getenv("TELEGRAM_PHONE")
 

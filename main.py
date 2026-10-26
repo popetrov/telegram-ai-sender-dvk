@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 os.chdir(Path(__file__).resolve().parent)
 if __name__ == '__main__':
+    if Path('data/security-install-pending.json').exists():
+        raise SystemExit('Установка защиты не завершена. Повторите файл установки защиты; программа не запущена.')
     if Path('data/active-installation.json').exists():
         raise SystemExit('Эта папка уже обновлена. Запустите программу привычным start.bat (на Mac — start_mac.sh).')
     import atexit
@@ -11,6 +13,15 @@ if __name__ == '__main__':
     _process_lock.__enter__()
     atexit.register(_process_lock.__exit__)
     import sys
+    if '--self-check' in sys.argv:
+        # A new installation legitimately has no API pair before center approval.
+        # Check only local storage/catalog; do not construct Telegram clients.
+        from database import init_database
+        from ai import get_catalog
+        init_database()
+        get_catalog()
+        print('Local database, imports and product catalog checked; no network calls.')
+        raise SystemExit(0)
     if '--self-check' not in sys.argv:
         from app_profile_client import prepare
         prepare(Path.cwd(),sender_lock_held=True)
@@ -162,6 +173,7 @@ async def main():
     sync_task = None
     spam_task = None
     dialogue_task = None
+    safety_task = None
 
     try:
         await ensure_telegram_authorized()
@@ -186,6 +198,11 @@ async def main():
         import spam_monitor
         async def notify_spam(text):
             await bot.bot.send_message(chat_id=access_runtime.account_id,text=text)
+        from telegram_safety import SafetyNotifications
+        safety = SafetyNotifications(client, notify_spam, access_runtime.account_id,
+                                     config.MANAGER_ID, os.environ.get('ACCESS_BOT_USERNAME', ''),
+                                     os.environ.get('ACCESS_PUBLIC_KEY', ''))
+        safety_task = asyncio.create_task(safety.run(), name='telegram-safety-notifications')
         spam_task = await spam_monitor.start(client,notify_spam)
         try:
             import dialogue_runtime
@@ -209,6 +226,7 @@ async def main():
             await bot.shutdown()
 
     finally:
+        await access_runtime.stop(safety_task)
         await access_runtime.stop(dialogue_task)
         await access_runtime.stop(spam_task)
         await access_runtime.stop(access_task)
@@ -219,14 +237,7 @@ async def main():
 if __name__ == "__main__":
     try:
         import sys
-        if '--self-check' in sys.argv:
-            from database import init_database
-            from ai import get_catalog
-            init_database()
-            get_catalog()
-            print('Local database, imports and product catalog checked; no network calls.')
-        else:
-            asyncio.run(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\nОстановка по команде пользователя.")
 

@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 
 RUNTIME = {
+    'safe_telegram.py','account_guard.py','telegram_safety.py',
     'center-public.json','app_profile_client.py','app_profile_protocol.py','app_profile_broker.py',
     'telegram_app_migrate.py','telegram_app_trust.py',
     "ai.py", "arbitration_api.py", "bot.py", "config.py", "database.py",

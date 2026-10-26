@@ -7,6 +7,8 @@ from app_profile_broker import owner_call
 from telegram_app_migrate import read_profile
 from telegram_app_trust import PROFILE_SIGNING_PUBLIC_KEY
 
+class ManagerIdentityConflict(ValueError):pass
+
 class AppProfileService:
     def __init__(self,store,key,state,notices=None):
         self.store,self.key,self.state,self.notices=store,key,Path(state),notices
@@ -26,6 +28,13 @@ class AppProfileService:
 
     def register(self,account,request):
         validate_request(request);subject=request['manager_id']+':'+str(account)
+        with self.store.connection() as db:
+            old=db.execute('SELECT subject FROM managers WHERE account_id=?',(account,)).fetchone()
+            if old and old['subject']!=subject:raise ManagerIdentityConflict('Номер менеджера не совпадает с зарегистрированным.')
+            if re.fullmatch(r'manager_[0-9]+',request['manager_id']):
+                peers=db.execute('SELECT subject FROM managers WHERE account_id<>?',(account,)).fetchall()
+                if any(row['subject'].rsplit(':',1)[0]==request['manager_id'] for row in peers):
+                    raise ManagerIdentityConflict('Этот номер менеджера уже занят другим аккаунтом.')
         self.store.register(account,subject)
         if self.notices:
             allowed,_=self.store.permission(account,subject)

@@ -1,0 +1,144 @@
+"""No Telegram deletion requests may leave an application-owned client."""
+import asyncio
+import base64
+from contextvars import ContextVar
+import json
+from telethon import TelegramClient, utils
+from telegram_safety import SafetyStop, default_journal, validate_report
+
+_report_permission = ContextVar('dvk_safety_report_permission', default=None)
+
+
+class TelegramDeletionBlocked(SafetyStop):
+    pass
+
+
+def requests_in(request, seen=None):
+    seen = set() if seen is None else seen
+    if id(request) in seen:
+        return
+    seen.add(id(request))
+    if utils.is_list_like(request):
+        for item in request:
+            yield from requests_in(item, seen)
+    else:
+        yield request
+        nested = getattr(request, 'query', None)
+        if nested is not None:
+            yield from requests_in(nested, seen)
+
+
+def forbidden_operation(request):
+    for item in requests_in(request):
+        name = type(item).__name__
+        if name.startswith(('Delete', 'Destroy', 'Discard', 'Clear')) or name in (
+                'LeaveChannelRequest', 'SetHistoryTTLRequest', 'SetDefaultHistoryTTLRequest',
+                'UpdateDialogFilterRequest', 'UpdateDialogFiltersOrderRequest', 'EditPeerFoldersRequest'):
+            return name
+
+
+def require_non_destructive(request):
+    if forbidden_operation(request):
+        raise TelegramDeletionBlocked('Удаление сообщений, истории и изменение папок программой запрещено.')
+
+
+class ProtectedTelegramClient(TelegramClient):
+    def __init__(self, *args, safety_journal=None, **kwargs):
+        self.safety_journal = safety_journal if safety_journal is not None else default_journal()
+        self._safety_failed = False
+        super().__init__(*args, **kwargs)
+        self._guard_sender(self._sender)
+
+    def _guard_sender(self, sender):
+        # Check the actual dispatch as well, including SDK retries after an await.
+        if getattr(sender, '_dvk_safety_guard', False):
+            return sender
+        original = sender.send
+        def guarded(request, *args, **kwargs):
+            if utils.is_list_like(request):
+                request = list(request)
+            self._check_request(request)
+            return original(request, *args, **kwargs)
+        sender.send = guarded
+        sender._dvk_safety_guard = True
+        return sender
+
+    async def _borrow_exported_sender(self, dc_id):
+        return self._guard_sender(await super()._borrow_exported_sender(dc_id))
+
+    def _deny(self, operation):
+        # Block even if disk persistence fails. Never log message IDs/text/peers.
+        self._safety_failed = True
+        try:
+            code = self.safety_journal.block(operation)['incident_id']
+        except Exception:
+            code = 'не удалось сохранить; проверка обязательна'
+        print('Защита переписки: опасный запрос заблокирован до Telegram. Код: ' + code, flush=True)
+        raise TelegramDeletionBlocked('Защита заблокировала изменение истории Telegram. Код: ' + code)
+
+    def _check_request(self, request):
+        operation = forbidden_operation(request)
+        if operation:
+            self._deny(operation)
+        for item in requests_in(request):
+            name = type(item).__name__
+            if name.startswith(('Send', 'Forward', 'Edit')) or name == 'StartBotRequest':
+                allowed = _report_permission.get()
+                peer = getattr(getattr(item, 'peer', None), 'user_id', None)
+                if (name == 'SendMessageRequest' and allowed is not None
+                        and peer == allowed[0] and getattr(item, 'message', None) == allowed[1]):
+                    continue
+                if self._safety_failed:
+                    raise SafetyStop('Защита переписки остановила отправку. Нужна проверка владельца.')
+                self.safety_journal.require_clear()
+
+    async def __call__(self, request, *args, **kwargs):
+        if utils.is_list_like(request):
+            request = list(request)
+        self._check_request(request)
+        return await super().__call__(request, *args, **kwargs)
+
+    async def _call(self, sender, request, *args, **kwargs):
+        # Cover SDK internal dispatch too, before peer resolution/network calls.
+        if utils.is_list_like(request):
+            request = list(request)
+        self._check_request(request)
+        return await super()._call(sender, request, *args, **kwargs)
+
+    async def delete_messages(self, *args, **kwargs):
+        self._deny('delete_messages')
+
+    async def delete_dialog(self, *args, **kwargs):
+        self._deny('delete_dialog')
+
+    async def report_safety(self, authority, report, account_id, public_key):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from access_lease import canonical
+        from access_runtime import transport_lock
+        validate_report(report)
+        text = '/safety ' + base64.urlsafe_b64encode(canonical(report)).decode()
+        async with asyncio.timeout(45):
+            entity = await self.get_entity(authority)
+            if (not getattr(entity, 'bot', False)
+                    or (entity.username or '').casefold() != authority.strip().lstrip('@').casefold()):
+                raise ValueError('Safety receiver must be the configured service bot')
+            async with transport_lock:
+                async with self.conversation(entity, timeout=30, exclusive=True) as conversation:
+                    token = _report_permission.set((entity.id, text))
+                    try:
+                        sent = await conversation.send_message(text, silent=True)
+                    finally:
+                        _report_permission.reset(token)
+                    async with asyncio.timeout(30):
+                        while True:
+                            response = await conversation.get_response(sent)
+                            if not (response.raw_text or '').startswith('DVK_SAFETY_ACK '):
+                                continue
+                            envelope = json.loads(response.raw_text[len('DVK_SAFETY_ACK '):])
+                            payload = envelope['payload']
+                            Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key, validate=True)).verify(
+                                base64.b64decode(envelope['signature'], validate=True), canonical(payload))
+                            if payload != dict(protocol='DVK_SAFETY_ACK_V1', incident_id=report['incident_id'],
+                                               account_id=account_id, manager_id=report['manager_id']):
+                                raise ValueError('Safety receipt identity mismatch')
+                            return

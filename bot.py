@@ -1674,6 +1674,13 @@ async def _send_one_prepared_message(
             final_message,
         )
     except Exception as exc:
+        from telegram_safety import SafetyStop
+        if isinstance(exc, SafetyStop):
+            # The protection refused dispatch: this message was never sent.
+            update_message_status(message_id=message_id, status='not_sent', send_error=str(exc))
+            update_client_status(client_id, 'manual_review')
+            update_prepared_status(item, 'manual_review', str(exc))
+            raise
         error_text = f"{type(exc).__name__}: {exc}"
 
         try:

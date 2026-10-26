@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,23 @@ class TransitionTests(unittest.TestCase):
         with sqlite3.connect(self.destination/'fixture_session.session') as db:
             self.assertEqual(db.execute('SELECT value FROM fixture_data').fetchone()[0],'synthetic session marker')
         db.close()
+
+    def test_reviewed_single_research_legacy_variant_gets_new_runtime_without_changing_data(self):
+        path=self.source/'bot.py'
+        raw=path.read_bytes()
+        self.assertIn(b'MAX_PARALLEL_RESEARCH = 10',raw)
+        path.write_bytes(raw.replace(b'MAX_PARALLEL_RESEARCH = 10',b'MAX_PARALLEL_RESEARCH = 1'))
+        before=self.hashes()
+        report=prepare_transition(self.source,self.destination,self.bundle)
+        self.assertEqual(report['conflicts'],[])
+        self.assertEqual(before,self.hashes())
+        self.assertEqual((self.destination/'bot.py').read_bytes(),(ROOT/'bot.py').read_bytes())
+        self.assertEqual((self.destination/'.env').read_bytes(),(self.source/'.env').read_bytes())
+        with closing(sqlite3.connect(self.destination/'fixture_session.session')) as db:
+            self.assertEqual(db.execute('SELECT value FROM fixture_data').fetchone()[0],'synthetic session marker')
+        with closing(sqlite3.connect(self.source/'data/local.sqlite')) as old, closing(sqlite3.connect(self.destination/'data/local.sqlite')) as new:
+            for table in ('clients','messages','prepared_messages'):
+                self.assertEqual(old.execute('SELECT * FROM '+table).fetchall(),new.execute('SELECT * FROM '+table).fetchall())
 
     def test_custom_products_prompts_and_paused_draft_are_preserved(self):
         products_path = self.source/'products.json'

@@ -18,15 +18,8 @@ transport_lock = asyncio.Lock()
 
 
 async def cleanup_service_messages(client, authority, *messages):
-    ids = [m.id for m in messages if type(getattr(m, 'id', None)) is int]
-    if not ids:
-        return
-    try:
-        async with asyncio.timeout(10):
-            await client.delete_messages(authority, ids, revoke=True)
-    except Exception as exc:
-        # Cleanup must never revoke a saved lease or force a data retransmission.
-        _log.warning('Service chat cleanup unavailable (%s)', type(exc).__name__)
+    """Compatibility entry point. Automatic Telegram deletion is disabled."""
+    return
 
 
 def is_service_message(message, store):
@@ -56,23 +49,13 @@ def is_service_message(message, store):
 
 
 async def clean_service_history(client, authority, store):
-    # Restricted to this configured bot and this installation's service traffic.
-    # Pending uploads remain in SQLite and will be retried if an old file is removed.
-    try:
-        async with asyncio.timeout(45):
-            batch = []
-            async for message in client.iter_messages(authority, limit=2000):
-                if is_service_message(message, store):
-                    batch.append(message)
-                if len(batch) == 100:
-                    await cleanup_service_messages(client, authority, *batch)
-                    batch = []
-            await cleanup_service_messages(client, authority, *batch)
-    except Exception as exc:
-        _log.warning('Old service chat cleanup unavailable (%s)', type(exc).__name__)
+    """Compatibility entry point. Never scan or delete chat history."""
+    return
 
 
 def require_access():
+    from telegram_safety import default_journal
+    default_journal().require_clear()
     if _store is None:
         raise AccessDenied("Центральный доступ не настроен или ещё не проверен.")
     return _store.require_access()
@@ -101,7 +84,6 @@ async def refresh(client, authority, store):
                     if envelope.get("payload", {}).get("nonce") != nonce:
                         continue
                     store.accept(envelope, nonce)
-                    await cleanup_service_messages(client, authority, sent, response)
                     return
                 except (ValueError, TypeError, AttributeError, AccessDenied):
                     _log.warning("Invalid central access response; cached lease unchanged")
@@ -125,8 +107,6 @@ async def start(client):
     _store.connection_id = secrets.token_hex(16)
 
     async def poll():
-        async with transport_lock:
-            await clean_service_history(client, authority, _store)
         while True:
             started = time.monotonic()
             try:

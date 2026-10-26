@@ -2,7 +2,7 @@ name: Verify and publish platform packages
 
 on:
   push:
-    branches: [feature/central-access-leases]
+    branches: [feature/central-access-leases, audit/telegram-safety]
     tags: ['v2.0.*']
   workflow_dispatch:
 

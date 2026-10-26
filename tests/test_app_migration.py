@@ -139,7 +139,7 @@ class MigrationTests(unittest.TestCase):
     def test_real_probe_adapter_uses_only_in_memory_session_copies_and_read_requests(self):
         self.session_fixture();before=self.session.read_bytes()
         clients=[self.client_fixture(),self.client_fixture()]
-        with patch('telethon.TelegramClient',side_effect=clients) as factory:
+        with patch('safe_telegram.ProtectedTelegramClient',side_effect=clients) as factory:
             asyncio.run(migration.probe_existing_session(self.root,migration.env_values(self.original.decode()),self.old,self.new))
         self.assertEqual(self.session.read_bytes(),before)
         from telethon.sessions import MemorySession
@@ -152,14 +152,14 @@ class MigrationTests(unittest.TestCase):
 
     def test_real_probe_rejects_a_different_account(self):
         self.session_fixture();before=self.session.read_bytes()
-        with patch('telethon.TelegramClient',side_effect=[self.client_fixture(42),self.client_fixture(43)]):
+        with patch('safe_telegram.ProtectedTelegramClient',side_effect=[self.client_fixture(42),self.client_fixture(43)]):
             with self.assertRaises(migration.MigrationDeferred):
                 asyncio.run(migration.probe_existing_session(self.root,migration.env_values(self.original.decode()),self.old,self.new))
         self.assertEqual(self.session.read_bytes(),before)
 
     def test_real_probe_does_not_request_login_codes_when_session_is_unauthorized(self):
         self.session_fixture();client=self.client_fixture(authorized=False)
-        with patch('telethon.TelegramClient',return_value=client) as factory:
+        with patch('safe_telegram.ProtectedTelegramClient',return_value=client) as factory:
             with self.assertRaises(migration.MigrationDeferred):
                 asyncio.run(migration.probe_existing_session(self.root,migration.env_values(self.original.decode()),self.old,self.new))
         factory.assert_called_once();client.get_me.assert_not_awaited();client.disconnect.assert_awaited_once()

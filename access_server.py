@@ -237,6 +237,8 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
         register_receiver(application, store, key, sync_key, notices=notices)
     if role != 'admin':
         application.add_handler(CommandHandler("lease", lease))
+        from telegram_safety import register_receiver as register_safety
+        register_safety(application, store, key, notices)
     async def on_error(update, context):
         logging.getLogger(__name__).error('Center operation failed (%s)', type(context.error).__name__)
         if notices is not None:
