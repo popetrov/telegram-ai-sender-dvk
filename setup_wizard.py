@@ -111,7 +111,8 @@ def wizard(root=ROOT,*,demo=False,open_browser=True,ready=None):
         server.timeout=1;url='http://127.0.0.1:'+str(server.server_port)+route
         if ready:ready(url)
         if open_browser:webbrowser.open(url)
-        print('Откройте страницу настройки: '+url,flush=True)
+        try:print('Откройте страницу настройки: '+url,flush=True)
+        except UnicodeEncodeError:print('Open setup page: '+url,flush=True)
         import time
         deadline=time.monotonic()+1800
         while not state['saved'] and time.monotonic()<deadline:server.handle_request()

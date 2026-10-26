@@ -1,4 +1,4 @@
-import hashlib,json,os,tempfile,threading,unittest,urllib.request,urllib.error,urllib.parse,zipfile
+import hashlib,io,json,os,tempfile,threading,unittest,urllib.request,urllib.error,urllib.parse,zipfile
 from pathlib import Path
 from unittest.mock import patch
 from dotenv import dotenv_values
@@ -43,15 +43,15 @@ class FreshInstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             thread=threading.Thread(target=setup.wizard,args=(Path(temporary),),kwargs=dict(demo=True,open_browser=False,ready=callback),daemon=True)
             thread.start();self.assertTrue(ready.wait(5));url=address[0];token=url.rsplit('/',1)[1]
-            with urllib.request.urlopen(url) as response:
+            with urllib.request.urlopen(url,timeout=5) as response:
                 body=response.read().decode();self.assertEqual(response.headers['Cache-Control'],'no-store')
             self.assertIn('type="password"',body)
             data=urllib.parse.urlencode(dict(self.values(),csrf=token)).encode()
             with self.assertRaises(urllib.error.HTTPError) as rejected:
-                urllib.request.urlopen(urllib.request.Request(url,data=data,headers={'Origin':'https://example.com'}))
+                urllib.request.urlopen(urllib.request.Request(url,data=data,headers={'Origin':'https://example.com'}),timeout=5)
             self.assertEqual(rejected.exception.code,403)
             origin=url.split('/setup/')[0]
-            with urllib.request.urlopen(urllib.request.Request(url,data=data,headers={'Origin':origin})) as response:self.assertEqual(response.status,200)
+            with urllib.request.urlopen(urllib.request.Request(url,data=data,headers={'Origin':origin}),timeout=5) as response:self.assertEqual(response.status,200)
             thread.join(5);self.assertFalse(thread.is_alive());self.assertFalse((Path(temporary)/'.env').exists())
 
     def test_token_validation_does_not_include_pasted_secret_in_error(self):

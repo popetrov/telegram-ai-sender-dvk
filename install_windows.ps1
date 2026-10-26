@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding
+$env:PYTHONIOENCODING = 'utf-8'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 function Suitable-Python($candidate) {
     if (-not $candidate -or -not (Test-Path -LiteralPath $candidate)) { return $false }
