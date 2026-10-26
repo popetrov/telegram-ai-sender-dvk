@@ -18,7 +18,7 @@ def validate_existing_number(current):
     if numbered:
         session=str(current.get('SESSION_NAME') or '').strip().removesuffix('.session')
         suffix=re.search(r'([0-9]+)$',session)
-        if not suffix or suffix[1]!=numbered[1]:
+        if suffix and suffix[1]!=numbered[1]:
             raise ValueError('Номер MANAGER_ID не совпадает с окончанием SESSION_NAME. Настройки не изменены; нужна проверка владельца.')
 
 

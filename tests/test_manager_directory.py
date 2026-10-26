@@ -78,9 +78,16 @@ class DirectoryTests(unittest.IsolatedAsyncioTestCase):
         original=dict(MANAGER_ID='manager_007',SESSION_NAME='telegram_sender_007')
         current=dict(original);validate_existing_number(current)
         self.assertEqual(current,original)
-        for session in ('telegram_sender_008','telegram_sender_7','telegram_sender'):
+        for session in ('telegram_sender_008','telegram_sender_7'):
             with self.assertRaises(ValueError):
                 validate_existing_number(dict(MANAGER_ID='manager_007',SESSION_NAME=session))
+
+    def test_legacy_unnumbered_session_preserves_existing_manager_and_login_name(self):
+        from manager_setup import validate_existing_number
+        for session in ('telegram_sender','telegram_sender.session'):
+            original=dict(MANAGER_ID='manager_001',SESSION_NAME=session)
+            current=dict(original);validate_existing_number(current)
+            self.assertEqual(current,original)
 
     async def test_admin_only_wizard_and_service_lease_never_contains_directory(self):
         app=create_server('123:test',99,Ed25519PrivateKey.generate(),self.store,
