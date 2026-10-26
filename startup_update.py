@@ -137,6 +137,19 @@ def activate(root, candidate):
 
 
 def prepare_update(source, candidate, bundle, tag):
+    # Never validate a newer package with the installed release's old allowlist.
+    # The bundle has already passed its exact file list and checksum checks.
+    from transition_setup import verify_bundle
+    verify_bundle(bundle)
+    script = ('import sys; from pathlib import Path; import startup_update as u; '
+              'prepare=getattr(u,"_prepare_verified_update",u.prepare_update); '
+              'prepare(Path(sys.argv[1]),Path(sys.argv[2]),Path(sys.argv[3]),sys.argv[4])')
+    subprocess.run([sys.executable,'-c',script,str(source.resolve()),str(candidate.resolve()),
+                    str(bundle.resolve()),tag],cwd=bundle,check=True,
+                   env={**os.environ,'PYTHONIOENCODING':'utf-8'})
+
+
+def _prepare_verified_update(source, candidate, bundle, tag):
     import manual_update
     from transition_setup import prepare_transition, finish_transition, verify_bundle
     manifest, _, _ = verify_bundle(bundle)

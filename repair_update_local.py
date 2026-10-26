@@ -13,6 +13,7 @@ import startup_update
 HERE=Path(__file__).resolve().parent
 # Exact normalized source shared by the published 2.0.20 and 2.0.21.
 OLD_HASH='315391821d1518e45939e5e572b1eadc1378a0a7af4eb2d16db836bb73319e88'
+RELEASE_23_HASH='807a011f0a37fba5c53a60a4a15119608ba5de7f5527a763c934b274973bc21e'
 BRIDGE_AST='09485b3c30ab442d15fd07fb7f68a65b10608a44ee31d968cddd4a6340bc62ed'
 BRIDGE_REPAIRED='''"""DVK repaired bridge: use the active updater, never a frozen embedded copy."""
 import json,pathlib,re,subprocess,sys
@@ -73,7 +74,7 @@ def repair(root):
             if path.is_symlink():raise ValueError('Небезопасный путь обновлятора.')
             if path.is_file():
                 old=path.read_bytes()
-                if digest(old) not in {OLD_HASH,digest(new)}:raise ValueError('Обновлятор изменён вручную. Автоматическая замена отложена.')
+                if digest(old) not in {OLD_HASH,RELEASE_23_HASH,digest(new)}:raise ValueError('Обновлятор изменён вручную. Автоматическая замена отложена.')
                 originals[path]=old;replacements[path]=new
             elif target!=root or active==root:raise ValueError('В выбранной папке не найден обновлятор.')
             if target==root and active!=root:

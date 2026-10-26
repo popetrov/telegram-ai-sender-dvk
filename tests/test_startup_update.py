@@ -144,7 +144,7 @@ class StartupUpdateTests(unittest.TestCase):
     def test_real_preparation_without_network_preserves_data_and_records_baseline(self):
         candidate = self.root.with_name('candidate')
         with FileLock(self.root/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update.prepare_update(self.root,candidate,self.bundle,self.tag)
+            update._prepare_verified_update(self.root,candidate,self.bundle,self.tag)
         self.assertTrue((candidate/'data/installed-baseline.json').is_file())
         self.assertEqual((candidate/'.env').read_bytes(),(self.root/'.env').read_bytes())
         self.assertEqual(json.loads((candidate/'transition-report.json').read_text())['ready_for_pilot'],True)
@@ -153,7 +153,7 @@ class StartupUpdateTests(unittest.TestCase):
         import manual_update
         first = self.root.with_name('first')
         with FileLock(self.root/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update.prepare_update(self.root,first,self.bundle,self.tag)
+            update._prepare_verified_update(self.root,first,self.bundle,self.tag)
         (first/'prompts/bg.md').write_text('Local manager text',encoding='utf-8')
         with sqlite3.connect(first/'data/local.sqlite') as db:
             db.execute('CREATE TABLE after_first_update(value TEXT)')
@@ -175,7 +175,7 @@ class StartupUpdateTests(unittest.TestCase):
         update.unpack_bundle(bundle_zip.read_bytes(),bundle)
         candidate = self.root.with_name('second')
         with FileLock(first/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update.prepare_update(first,candidate,bundle,'v'+self.next_version)
+            update._prepare_verified_update(first,candidate,bundle,'v'+self.next_version)
         self.assertEqual((candidate/'prompts/bg.md').read_text('utf-8'),'Local manager text')
         with sqlite3.connect(candidate/'data/local.sqlite') as db:
             self.assertEqual(db.execute('SELECT value FROM after_first_update').fetchone()[0],'latest local data')
