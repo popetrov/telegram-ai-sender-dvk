@@ -10,6 +10,14 @@ if __name__ == '__main__':
     _process_lock = FileLock(Path('data/sender.lock'))
     _process_lock.__enter__()
     atexit.register(_process_lock.__exit__)
+    import sys
+    if '--self-check' not in sys.argv:
+        from app_profile_client import prepare
+        prepare(Path.cwd(),sender_lock_held=True)
+        from telegram_app_migrate import env_values
+        _settings=env_values(Path('.env').read_text('utf-8-sig'))
+        for _name in ('TELEGRAM_API_ID','TELEGRAM_API_HASH'):
+            if _settings.get(_name):os.environ[_name]=_settings[_name]
 
 import access_runtime
 import sync_runtime

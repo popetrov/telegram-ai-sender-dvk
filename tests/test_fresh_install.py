@@ -17,6 +17,7 @@ class FreshInstallTests(unittest.TestCase):
             root=Path(temporary);(root/'center-public.json').write_bytes((ROOT/'center-public.json').read_bytes())
             setup.save(root,self.values());original=(root/'.env').read_bytes()
             values=dotenv_values(root/'.env')
+            self.assertNotIn('TELEGRAM_API_ID',values);self.assertNotIn('TELEGRAM_API_HASH',values)
             self.assertEqual(values['MANAGER_ID'],'manager_010');self.assertEqual(values['SESSION_NAME'],'telegram_sender_manager_010')
             self.assertTrue(values['ACCESS_PUBLIC_KEY']);self.assertTrue(values['SYNC_PUBLIC_KEY'])
             with self.assertRaises(ValueError):setup.save(root,self.values())
@@ -46,6 +47,7 @@ class FreshInstallTests(unittest.TestCase):
             with urllib.request.urlopen(url,timeout=5) as response:
                 body=response.read().decode();self.assertEqual(response.headers['Cache-Control'],'no-store')
             self.assertIn('type="password"',body)
+            self.assertNotIn('name="TELEGRAM_API_ID"',body);self.assertNotIn('name="TELEGRAM_API_HASH"',body)
             data=urllib.parse.urlencode(dict(self.values(),csrf=token)).encode()
             with self.assertRaises(urllib.error.HTTPError) as rejected:
                 urllib.request.urlopen(urllib.request.Request(url,data=data,headers={'Origin':'https://example.com'}),timeout=5)

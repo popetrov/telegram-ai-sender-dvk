@@ -5,7 +5,7 @@ import logging
 from telegram.error import NetworkError
 
 
-async def run_center(admin, service, notices, admin_id, state, expected_username, *, directory=None, knowledge_clients=()):
+async def run_center(admin, service, notices, admin_id, state, expected_username, *, directory=None, knowledge_clients=(),app_profiles=None):
     started, polling, tasks = [], [], []
     async with AsyncExitStack() as stack:
         try:
@@ -31,6 +31,8 @@ async def run_center(admin, service, notices, admin_id, state, expected_username
                 await app.updater.start_polling(bootstrap_retries=3, error_callback=on_poll_error)
                 polling.append(app)
             tasks.append(asyncio.create_task(notices.run(admin.bot, admin_id)))
+            if app_profiles is not None:
+                tasks.append(asyncio.create_task(app_profiles.loop()))
             if directory is not None and (state / 'sheets.json').exists():
                 from sheets_directory_sync import loop
                 tasks.append(asyncio.create_task(loop(directory, state, notices)))

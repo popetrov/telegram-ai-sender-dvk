@@ -104,6 +104,7 @@ jobs:
           bash -n install_linux.sh
           bash -n start_mac.sh
       - run: python -m unittest discover -s tests -p test_fresh_install.py
+      - run: python -m unittest tests.test_app_profiles tests.test_app_migration
       - run: python build_platform_release.py --output fresh-dist
       - name: Check new configuration and local startup with Python 3.14
         shell: bash

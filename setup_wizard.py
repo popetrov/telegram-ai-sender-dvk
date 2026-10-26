@@ -4,8 +4,6 @@ from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent
 FIELDS=(('number','Номер менеджера от руководителя, например 010',False),
-        ('TELEGRAM_API_ID','Telegram API ID — получите у руководителя',False),
-        ('TELEGRAM_API_HASH','Telegram API Hash — получите у руководителя',True),
         ('BOT_TOKEN','Токен вашего бота из @BotFather',True),
         ('OPENAI_API_KEY','Ключ ИИ — получите у руководителя',True),
         ('PARSER_API_KEY','Ключ судебного поиска — для ДВК Право',True))
@@ -13,8 +11,7 @@ FIELDS=(('number','Номер менеджера от руководителя, 
 def validate(values):
     values={key:str(value).strip() for key,value in values.items()}
     if not re.fullmatch(r'[0-9]{1,12}',values.get('number','')):raise ValueError('Введите номер, который выдал руководитель. Ведущие нули сохраняются.')
-    if not values.get('TELEGRAM_API_ID','').isdigit():raise ValueError('Telegram API ID должен состоять из цифр.')
-    if not re.fullmatch(r'[a-fA-F0-9]{32}',values.get('TELEGRAM_API_HASH','')):raise ValueError('Проверьте Telegram API Hash: нужны 32 символа, без пробелов.')
+    values={key:values.get(key,'') for key,_,_ in FIELDS}
     if not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]{20,}',values.get('BOT_TOKEN','')):raise ValueError('Проверьте токен BotFather: скопируйте только токен, без текста вокруг.')
     if not values.get('OPENAI_API_KEY'):raise ValueError('Получите ключ ИИ у руководителя и вставьте его.')
     if any(c.isspace() for key in ('OPENAI_API_KEY','PARSER_API_KEY') for c in values.get(key,'')):
@@ -93,7 +90,7 @@ def wizard(root=ROOT,*,demo=False,open_browser=True,ready=None):
                 if not hmac.compare_digest(fields.pop('csrf',[''])[0],token):raise ValueError('invalid')
                 values={key:fields.get(key,[''])[0] for key,_,_ in FIELDS}
                 if not demo:save(root,values)
-                self.respond('<html lang="ru"><meta charset="utf-8"><title>ДВК — готово</title><body style="font:20px Arial;max-width:720px;margin:100px auto;line-height:1.6"><h1>Настройка завершена</h1><p>Вернитесь в окно программы. Сейчас появится QR-код для входа в Telegram.</p><p>На телефоне: Настройки → Устройства → Подключить устройство.</p><p>После входа откройте своего бота и дождитесь разрешения руководителя.</p></body></html>'.encode('utf-8'))
+                self.respond('<html lang="ru"><meta charset="utf-8"><title>ДВК — готово</title><body style="font:20px Arial;max-width:720px;margin:100px auto;line-height:1.6"><h1>Настройки сохранены</h1><p>Сейчас программа откроет технического бота Telegram. Нажмите там «Запустить» и дождитесь разрешения руководителя.</p><p>Затем вернитесь в окно программы: появится QR-код для входа в тот же аккаунт.</p><p>На телефоне: Настройки → Устройства → Подключить устройство.</p></body></html>'.encode('utf-8'))
                 state['saved']=True
             except ValueError as exc:
                 import html
@@ -120,7 +117,7 @@ def wizard(root=ROOT,*,demo=False,open_browser=True,ready=None):
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--demo',action='store_true');parser.add_argument('--launch',action='store_true');args=parser.parse_args()
-    if wizard(demo=args.demo) and args.launch:
+    if ((not args.demo and (ROOT/'.env').exists()) or wizard(demo=args.demo)) and args.launch:
         return subprocess.run([sys.executable,'-u','start.py'],cwd=ROOT).returncode
     return 0
 

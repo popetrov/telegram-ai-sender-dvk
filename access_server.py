@@ -278,6 +278,11 @@ def main():
         directory = ManagerDirectory(store)
         admin = create_server(token, admin_id, key, store, role='admin', notices=notices, directory=directory)
         service = create_server(service_token, admin_id, key, store, sync_key, role='service', notices=notices)
+        app_profiles=None
+        if (STATE/'telegram-app-profile.private.json').exists():
+            from app_profile_server import AppProfileService,register_handlers
+            app_profiles=AppProfileService(store,key,STATE,notices)
+            register_handlers(service,app_profiles)
         from dialogue_center import load_broker
         try:
             broker,knowledge_clients=load_broker(STATE,store,key,sync_key)
@@ -290,7 +295,7 @@ def main():
             register_knowledge(service,broker)
         try:
             asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username,
-                                    directory=directory,knowledge_clients=knowledge_clients))
+                                    directory=directory,knowledge_clients=knowledge_clients,app_profiles=app_profiles))
         except KeyboardInterrupt:
             print('Центр остановлен.')
 

@@ -1,4 +1,78 @@
 // Bind this script to the owner's "Менеджеры бота" spreadsheet. No manager uses it.
+// Application bootstrap stores only public request keys and encrypted replies.
+function dvkAppJson(value) {
+  return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);
+}
+function dvkAppRequestValid(r) {
+  return r && Object.keys(r).sort().join('|') === 'manager_id|nonce|protocol|public_key|request_id' &&
+    r.protocol === 'DVK_APP_REQUEST_V1' && /^[a-f0-9]{32}$/.test(r.request_id) &&
+    /^[a-f0-9]{32}$/.test(r.nonce) && /^[A-Za-z0-9+/]{43}=$/.test(r.public_key) &&
+    /^[A-Za-z0-9_-]{1,80}$/.test(r.manager_id);
+}
+function dvkAppOwnerResponse(secret, requestId, ok, data) {
+  const message = JSON.stringify({request_id:requestId, ok:ok, data:data});
+  return dvkAppJson({message:message,signature:dvkMac(secret,message)});
+}
+function doPost(e) {
+  let envelope;
+  try {
+    if (!e.postData || e.postData.contents.length > 20000) throw Error('invalid');
+    envelope = JSON.parse(e.postData.contents);
+    const cache = {
+      get: key => CacheService.getScriptCache().get(key),
+      put: (key,value,ttl) => CacheService.getScriptCache().put(key,value,ttl)
+    };
+    if (envelope.action === 'app_register') {
+      if (!dvkAppRequestValid(envelope.request)) throw Error('invalid');
+      const lock = LockService.getScriptLock();
+      if (!lock.tryLock(1000)) return dvkAppJson({ok:false});
+      try {
+        const r = envelope.request, key = 'dvk-app-request:'+r.request_id;
+        const prior = cache.get(key);
+        if (prior) {
+          if (prior !== JSON.stringify(r)) throw Error('conflict');
+          return dvkAppJson({ok:true});
+        }
+        const bucket='dvk-app-rate:'+Math.floor(Date.now()/60000);
+        const count=Number(cache.get(bucket)||'0');
+        if (count>=60) throw Error('busy');
+        cache.put(bucket,String(count+1),120);
+        cache.put(key,JSON.stringify(r),1200);
+        return dvkAppJson({ok:true});
+      } finally {lock.releaseLock();}
+    }
+    if (envelope.action === 'app_poll') {
+      if (!/^[a-f0-9]{32}$/.test(envelope.request_id)) throw Error('invalid');
+      const packet=cache.get('dvk-app-response:'+envelope.request_id);
+      return dvkAppJson({ok:true,packet:packet ? JSON.parse(packet) : null});
+    }
+    if (typeof envelope.message === 'string') {
+      let r;
+      try {r=JSON.parse(envelope.message);} catch (_) {r=null;}
+      if (r && r.protocol === 'DVK_APP_BROKER_V1') {
+        const secret=PropertiesService.getScriptProperties().getProperty('DVK_SECRET');
+        if (!secret || !/^[a-f0-9]{64}$/.test(envelope.signature)) throw Error('invalid');
+        const actual=dvkMac(secret,envelope.message);let diff=0;
+        for(let i=0;i<actual.length;i++)diff|=actual.charCodeAt(i)^envelope.signature.charCodeAt(i);
+        if(diff || !Number.isSafeInteger(r.when) || Math.abs(Date.now()/1000-r.when)>600 ||
+          !/^[a-f0-9]{32}$/.test(r.request_id) || !/^[a-f0-9]{32}$/.test(r.installation)) throw Error('invalid');
+        if(r.operation==='get_request') {
+          const found=cache.get('dvk-app-request:'+r.installation);
+          return dvkAppOwnerResponse(secret,r.request_id,!!found,found?JSON.parse(found):null);
+        }
+        if(r.operation==='put_response') {
+          const found=cache.get('dvk-app-request:'+r.installation);
+          if(!found || !r.packet || r.packet.protocol!=='DVK_APP_SEALED_V1' || JSON.stringify(r.packet).length>16000)
+            return dvkAppOwnerResponse(secret,r.request_id,false,null);
+          cache.put('dvk-app-response:'+r.installation,JSON.stringify(r.packet),900);
+          return dvkAppOwnerResponse(secret,r.request_id,true,null);
+        }
+        return dvkAppOwnerResponse(secret,r.request_id,false,null);
+      }
+    }
+  } catch (_) {return dvkAppJson({ok:false});}
+  return dvkRosterPost(e);
+}
 const DVK_SHEET_ID = '1nmhAPOQV_EBUbv4rao8NSBpmvsEmEm8EIX4ep_8mrao';
 const DVK_TAB = 'Лист1';
 
@@ -27,7 +101,7 @@ function dvkResponse(secret, request, ok, code) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-function doPost(e) {
+function dvkRosterPost(e) {
   const secret = PropertiesService.getScriptProperties().getProperty('DVK_SECRET');
   let request;
   try {

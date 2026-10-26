@@ -3,7 +3,7 @@ import hashlib,json,stat,zipfile
 from pathlib import Path
 from manual_update import verify_package
 
-COMMON={'install_manager.py','setup_wizard.py','center-public.json','python-downloads.json','INSTALLATION.md'}
+COMMON={'install_manager.py','setup_wizard.py','python-downloads.json','INSTALLATION.md'}
 GUIDE='Инструкция по установке.pdf'
 PLATFORM={
     'windows':{'install.bat','install_windows.ps1'},

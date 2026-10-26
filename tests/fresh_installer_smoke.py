@@ -10,7 +10,9 @@ def main():
         with zipfile.ZipFile(args.archive) as archive:archive.extractall(folder)
         code=('from pathlib import Path; import setup_wizard; '
               'setup_wizard.save(Path.cwd(),dict(number="010",TELEGRAM_API_ID="12345",'
-              'TELEGRAM_API_HASH="a"*32,BOT_TOKEN="12345:"+"x"*30,OPENAI_API_KEY="test",PARSER_API_KEY=""))')
+              'TELEGRAM_API_HASH="a"*32,BOT_TOKEN="12345:"+"x"*30,OPENAI_API_KEY="test",PARSER_API_KEY="")); '
+              'from dotenv import set_key; set_key(".env","TELEGRAM_API_ID","12345"); '
+              'set_key(".env","TELEGRAM_API_HASH","a"*32)')
         env={**os.environ,'PYTHONIOENCODING':'utf-8'}
         subprocess.run([sys.executable,'-c',code],cwd=folder,env=env,check=True)
         subprocess.run([sys.executable,'main.py','--self-check'],cwd=folder,env=env,check=True)

@@ -19,6 +19,9 @@ async def connect():
         raise RuntimeError("Telegram-сессия не авторизована.")
 
     me = await client.get_me()
+    from app_profile_client import check_account
+    from pathlib import Path
+    check_account(Path(__file__).resolve().parent,me.id)
 
     print("=== TELEGRAM CONNECTION TEST ===")
     print(f"User ID: {me.id}")

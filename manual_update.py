@@ -18,6 +18,8 @@ import tempfile
 import zipfile
 
 RUNTIME = {
+    'center-public.json','app_profile_client.py','app_profile_protocol.py','app_profile_broker.py',
+    'telegram_app_migrate.py','telegram_app_trust.py',
     "ai.py", "arbitration_api.py", "bot.py", "config.py", "database.py",
     "launcher.py", "main.py", "telegram_client.py", "updater.py",
     "access_lease.py", "access_runtime.py", "context_adapters.py", "product_catalog.py",
