@@ -21,7 +21,7 @@ if [[ "${DVK_FORCE_PYTHON_INSTALL:-0}" == 1 ]] || ! find_python; then
   if [[ "$system" == Darwin ]]; then
     tempdir="$(mktemp -d -t dvk-python)"
     pkg="$tempdir/python.pkg"
-    curl --fail --location --proto '=https' --tlsv1.2 'https://www.python.org/ftp/python/3.14.10/python-3.14.10-macos11.pkg' -o "$pkg"
+    curl --fail --location --connect-timeout 15 --max-time 600 --proto '=https' --tlsv1.2 'https://www.python.org/ftp/python/3.14.10/python-3.14.10-macos11.pkg' -o "$pkg"
     echo '286c7018aa2730f6747ca433dccdc2b31be45f078a9ea0ffa44d5f06368fd2d7  '"$pkg" | shasum -a 256 -c -
     /usr/sbin/pkgutil --check-signature "$pkg" | grep -F 'Python Software Foundation (BMM5U3QVKW)' >/dev/null
     echo 'Для установки Python macOS запросит пароль администратора компьютера.'
@@ -53,7 +53,7 @@ if [[ "${DVK_FORCE_PYTHON_INSTALL:-0}" == 1 ]] || ! find_python; then
         echo 'Требуется Python 3.11–3.14. Обратитесь к руководителю.' >&2;exit 1
       fi
       tempdir="$(mktemp -d -t dvk-python.XXXXXXXX)";archive="$tempdir/Python.tgz"
-      curl --fail --location --proto '=https' --tlsv1.2 'https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tgz' -o "$archive"
+      curl --fail --location --connect-timeout 15 --max-time 600 --proto '=https' --tlsv1.2 'https://www.python.org/ftp/python/3.14.10/Python-3.14.10.tgz' -o "$archive"
       echo '9e4996c19ae5a3df31f10c37723661f71d3455d73bd005f79df7098e5cc13192  '"$archive" | sha256sum -c -
       tar -xzf "$archive" -C "$tempdir"
       (cd "$tempdir/Python-3.14.10" && ./configure --prefix="$HOME/.local/dvk-python" --with-ensurepip=install && make -j2 && make altinstall)

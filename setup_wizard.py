@@ -69,6 +69,7 @@ button{width:100%;border:0;border-radius:8px;background:#235fc7;color:white;padd
 def wizard(root=ROOT,*,demo=False,open_browser=True,ready=None):
     import hmac,secrets,webbrowser
     from http.server import HTTPServer,BaseHTTPRequestHandler
+    from socketserver import TCPServer
     from urllib.parse import parse_qs
     token=secrets.token_urlsafe(32);route='/setup/'+token;state={'saved':False}
     class Handler(BaseHTTPRequestHandler):
@@ -99,7 +100,14 @@ def wizard(root=ROOT,*,demo=False,open_browser=True,ready=None):
                 self.respond(('<html lang="ru"><meta charset="utf-8"><h2>Проверьте поля</h2><p>'+html.escape(str(exc))+'</p><p>Нажмите кнопку браузера «Назад», исправьте поле и сохраните снова.</p></html>').encode('utf-8'),400)
             except Exception as exc:
                 self.respond(('Ошибка '+type(exc).__name__+'. Настройка не завершена. Обратитесь к руководителю.').encode('utf-8'),500)
-    with HTTPServer(('127.0.0.1',0),Handler) as server:
+    class LocalServer(HTTPServer):
+        def server_bind(self):
+            # HTTPServer's reverse-DNS lookup can stall localhost startup on
+            # Macs. This loopback-only wizard never needs a DNS server name.
+            TCPServer.server_bind(self)
+            self.server_name='127.0.0.1'
+            self.server_port=self.server_address[1]
+    with LocalServer(('127.0.0.1',0),Handler) as server:
         server.timeout=1;url='http://127.0.0.1:'+str(server.server_port)+route
         if ready:ready(url)
         if open_browser:webbrowser.open(url)

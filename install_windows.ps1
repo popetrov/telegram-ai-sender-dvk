@@ -31,7 +31,7 @@ if (-not $python) {
     $item=$manifest.$arch
     if (-not $item.url.StartsWith('https://www.python.org/ftp/python/')) { throw 'Неподтверждённый адрес Python.' }
     $temp=Join-Path ([IO.Path]::GetTempPath()) ('dvk-python-'+[guid]::NewGuid().ToString('N')+'.exe')
-    Invoke-WebRequest -UseBasicParsing -Uri $item.url -OutFile $temp
+    Invoke-WebRequest -UseBasicParsing -Uri $item.url -OutFile $temp -TimeoutSec 300
     if ((Get-FileHash -LiteralPath $temp -Algorithm SHA256).Hash.ToLowerInvariant() -ne $item.sha256) { throw 'Контрольная сумма Python не совпала. Установка остановлена.' }
     $signature=Get-AuthenticodeSignature -LiteralPath $temp
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Python Software Foundation') { throw 'Подпись Python не подтверждена.' }
