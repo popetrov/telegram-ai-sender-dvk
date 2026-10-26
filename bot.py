@@ -67,8 +67,16 @@ DATA_DIR = Path("data")
 
 MAX_EXCEL_SIZE_BYTES = 20 * 1024 * 1024
 MAX_ROWS_PER_IMPORT = 500
-MAX_PARALLEL_RESEARCH = 10
+MAX_PARALLEL_RESEARCH = 1
+OWNER_RESEARCH_ACCOUNT_ID = 925600480
 SEND_INTERVAL_SECONDS = 10
+
+
+def parallel_research_limit():
+    # Use the connected Telegram identity, never a manager number or bot-chat ID.
+    if type(access_runtime.account_id) is int and access_runtime.account_id == OWNER_RESEARCH_ACCOUNT_ID:
+        return 10
+    return MAX_PARALLEL_RESEARCH
 
 REQUIRED_COLUMNS = ["Юзернейм", "Продукт"]
 
@@ -1304,12 +1312,12 @@ async def confirm_command(
             return
 
         total = len(rows)
-        semaphore = asyncio.Semaphore(MAX_PARALLEL_RESEARCH)
+        parallel_limit = parallel_research_limit()
+        semaphore = asyncio.Semaphore(parallel_limit)
 
         await update.effective_message.reply_text(
             f"Начинаю обработку {total} компаний.\n\n"
-            f"Одновременно обрабатывается до "
-            f"{MAX_PARALLEL_RESEARCH} компаний.\n"
+            f"Одновременных исследований: {parallel_limit}.\n"
             "Сохранённые сообщения будут восстановлены из SQLite.\n"
             "Новые исследования выполняются только для клиентов, "
             "для которых нет сохранённого результата.\n"
