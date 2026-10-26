@@ -25,6 +25,12 @@ FIELDS={'protocol','version','api_id','api_hash','app_title'}
 class MigrationDeferred(RuntimeError):pass
 
 
+def say(text,fallback):
+    # A narrow Windows output encoding must never turn a safe deferral into a crash.
+    try:print(text,flush=True)
+    except UnicodeEncodeError:print(fallback,flush=True)
+
+
 def canonical(payload):
     return json.dumps(payload,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode('utf-8')
 
@@ -270,7 +276,8 @@ def apply_bundled_profile(root,*,sender_lock_held=False,offline=False):
         from telegram_app_trust import PROFILE_SIGNING_PUBLIC_KEY
         return migrate(root,profile,PROFILE_SIGNING_PUBLIC_KEY,sender_lock_held=sender_lock_held)
     except (MigrationDeferred,OSError,ValueError,ImportError):
-        print('Настройки приложения Telegram сохранены прежними; переход отложен.',flush=True)
+        say('Настройки приложения Telegram сохранены прежними; переход отложен.',
+            'Telegram application settings unchanged; migration deferred.')
         return dict(status='deferred')
 
 

@@ -1,4 +1,4 @@
-import asyncio,base64,json,tempfile,time,unittest,shutil,subprocess
+import asyncio,base64,json,tempfile,time,unittest,shutil,subprocess,io
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock,patch
@@ -72,6 +72,16 @@ class Profiles(unittest.TestCase):
             with self.assertRaises(RuntimeError):prepare(self.root)
         self.assertNotIn('TELEGRAM_API_HASH',(self.root/'.env').read_text())
 
+    def test_safe_deferral_on_western_windows_console(self):
+        env=self.root/'.env';env.write_text(env.read_text()+'TELEGRAM_API_ID=123\nTELEGRAM_API_HASH='+'b'*32+'\n')
+        buffer=io.BytesIO();output=io.TextIOWrapper(buffer,encoding='cp1252')
+        try:
+            with patch('sys.stdout',output),patch('app_profile_client.direct',new=AsyncMock(side_effect=TimeoutError)):
+                self.assertEqual(prepare(self.root)['status'],'deferred')
+                migration.say('Переход отложен.','Migration deferred.')
+            output.flush();self.assertIn(b'Keeping the previous working settings',buffer.getvalue())
+        finally:output.detach()
+
     def test_direct_delivery_requires_company_access_and_preserves_manager_number(self):
         state=self.root/'state';state.mkdir();(state/'telegram-app-profile.private.json').write_text(json.dumps(self.profile))
         store=AuthorityStore(state/'authority.sqlite')
@@ -88,4 +98,3 @@ class Profiles(unittest.TestCase):
         self.assertEqual(open_response(self.key,json.loads(response[8:]),self.request,public_text(self.center))['payload']['manager_id'],'manager_007')
         store.revoke(777);asyncio.run(service.direct(update,context))
         self.assertEqual(message.reply_text.call_args.args[0],'DVK_APP_PENDING')
-

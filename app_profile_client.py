@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from app_profile_protocol import DOMAIN,PROTOCOL,open_response,validate_request
 from access_lease import canonical
 from sync_protocol import public_text
-from telegram_app_migrate import env_values,private_atomic,read_profile,migrate,probe_application_pair
+from telegram_app_migrate import env_values,private_atomic,read_profile,migrate,probe_application_pair,say
 from telegram_app_trust import PROFILE_SIGNING_PUBLIC_KEY
 
 
@@ -100,7 +100,8 @@ def fresh(root,values,public,*,timeout=1200):
     key,request=new_request(values['MANAGER_ID'])
     register(url,request)
     link='https://t.me/'+public['service_bot']+'?start=app_'+request['request_id']
-    print('Подтвердите подключение: откройте ссылку и нажмите «Запустить» в Telegram.\n'+link,flush=True)
+    say('Подтвердите подключение: откройте ссылку и нажмите «Запустить» в Telegram.\n'+link,
+        'Confirm connection: open this link and press Start in Telegram.\n'+link)
     webbrowser.open(link)
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
@@ -135,5 +136,6 @@ def prepare(root,*,sender_lock_held=False):
     except Exception:
         if not existing:
             raise RuntimeError('Подключение не завершено. Убедитесь, что нажали «Запустить» у технического бота и руководитель выдал доступ. Затем повторите обычный запуск.') from None
-        print('Автонастройка Telegram отложена. Запускаю с прежними рабочими настройками.',flush=True)
+        say('Автонастройка Telegram отложена. Запускаю с прежними рабочими настройками.',
+            'Telegram setup deferred. Keeping the previous working settings.')
         return dict(status='deferred')
