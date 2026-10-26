@@ -2,7 +2,7 @@ name: Verify and publish platform packages
 
 on:
   push:
-    branches: [feature/central-access-leases, audit/telegram-safety]
+    branches: [feature/central-access-leases, audit/telegram-safety, audit/telegram-safety-macos15]
     tags: ['v2.0.*']
   workflow_dispatch:
 
@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -72,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
