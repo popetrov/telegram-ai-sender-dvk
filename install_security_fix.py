@@ -15,6 +15,7 @@ FILES = ('access_runtime.py', 'app_profile_client.py', 'bot.py', 'config.py',
          'safe_telegram.py', 'telegram_safety.py', 'account_guard.py')
 MAINTENANCE = ("raise SystemExit('Установка защиты не завершена. Повторите файл установки защиты. "
                "Программа не запущена.')\n").encode('utf-8')
+NEW_FILES = {'safe_telegram.py','telegram_safety.py','account_guard.py'}
 
 
 def digest(raw):
@@ -102,7 +103,7 @@ def user_data(root):
 
 def install(root, payload):
     root=Path(root).resolve()
-    if payload.get('format')!=1 or set(payload['files'])!=set(FILES) or payload.get('version')!='2.0.29':
+    if payload.get('format')!=1 or set(payload['files'])!=set(FILES) or payload.get('version')!='2.0.30':
         raise ValueError('Неизвестный защитный пакет')
     files={name:base64.b64decode(value,validate=True) for name,value in payload['files'].items()}
     if files['version.txt'].decode('utf-8-sig').strip()!=payload['version']:
@@ -119,7 +120,7 @@ def install(root, payload):
             stack.enter_context(Lock(folder/'data/sender.lock'))
         if active_folder(root)!=active:raise ValueError('Рабочая папка изменилась во время проверки')
         version=read(active/'version.txt',128).decode('utf-8-sig').strip()
-        if version not in ('2.0.27','2.0.28','2.0.29'):
+        if version not in ('2.0.27','2.0.28','2.0.29','2.0.30'):
             raise ValueError('Это исправление проверено только для 2.0.27 и 2.0.28')
         pending=active/'data/security-install-pending.json'
         receipt_path=active/'data/security-patch.json'
@@ -137,7 +138,7 @@ def install(root, payload):
                         and digest(raw) not in payload['accepted'].get(name,[])):
                     raise ValueError('Файл '+name+' отличается от проверенной версии. Ничего не перезаписано.')
                 old[name]=raw
-            elif payload['accepted'].get(name):
+            elif name not in NEW_FILES:
                 raise ValueError('Отсутствует рабочий файл: '+name)
         before=user_data(active)
         if (all(old.get(name)==files[name] for name in FILES) and receipt_path.is_file() and not pending.exists()):

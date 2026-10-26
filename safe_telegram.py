@@ -4,7 +4,7 @@ import base64
 from contextvars import ContextVar
 import json
 from telethon import TelegramClient, utils
-from telegram_safety import SafetyStop, default_journal, validate_report
+from telegram_safety import SafetyStop, console_notice, default_journal, validate_report
 
 _report_permission = ContextVar('dvk_safety_report_permission', default=None)
 
@@ -72,8 +72,9 @@ class ProtectedTelegramClient(TelegramClient):
         try:
             code = self.safety_journal.block(operation)['incident_id']
         except Exception:
-            code = 'не удалось сохранить; проверка обязательна'
-        print('Защита переписки: опасный запрос заблокирован до Telegram. Код: ' + code, flush=True)
+            code = 'journal_unavailable'
+        console_notice('Защита переписки: опасный запрос заблокирован до Telegram. Код: ' + code,
+                       'Telegram safety: request blocked. Incident: ' + code)
         raise TelegramDeletionBlocked('Защита заблокировала изменение истории Telegram. Код: ' + code)
 
     def _check_request(self, request):

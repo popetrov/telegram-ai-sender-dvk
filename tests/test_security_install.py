@@ -50,7 +50,7 @@ class SecurityInstallTests(unittest.TestCase):
         self.assertFalse(result['sender_started'])
         self.assertEqual(installer.user_data(active),before)
         self.assertEqual(pointer.read_bytes(),original_pointer)
-        self.assertEqual((active/'version.txt').read_text().strip(),'2.0.29')
+        self.assertEqual((active/'version.txt').read_text().strip(),'2.0.30')
         baseline=json.loads((active/'data/installed-baseline.json').read_text('utf-8'))
         self.assertEqual(baseline['safe_telegram.py'],(active/'safe_telegram.py').read_bytes().decode('utf-8-sig'))
         self.assertFalse((active/'data/security-install-pending.json').exists())

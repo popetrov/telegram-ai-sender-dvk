@@ -18,6 +18,17 @@ class SafetyStop(AccessDenied):
     pass
 
 
+def console_notice(text, fallback='Telegram safety: delivery pending; incident retained.'):
+    """A diagnostic stream must never interrupt protection or notification retries."""
+    try:
+        print(text, flush=True)
+    except Exception:
+        try:
+            print(fallback, flush=True)
+        except Exception:
+            pass
+
+
 class SafetyJournal:
     def __init__(self, path):
         self.path = Path(path)
@@ -188,5 +199,6 @@ class SafetyNotifications:
             try:
                 await self.step()
             except Exception as exc:
-                print('Уведомление защиты ожидает доставки (' + type(exc).__name__ + ').', flush=True)
+                console_notice('Уведомление защиты ожидает доставки (' + type(exc).__name__ + ').',
+                               'Safety notification delivery pending (' + type(exc).__name__ + ').')
             await asyncio.sleep(10)

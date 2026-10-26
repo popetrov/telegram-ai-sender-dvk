@@ -2,6 +2,7 @@ import ast
 import asyncio
 import base64
 import json
+import io
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -86,6 +87,41 @@ class TelegramSafetyTests(unittest.IsolatedAsyncioTestCase):
                 await self.client.delete_dialog(77)
         with self.assertRaises(SafetyStop):
             await self.client(functions.messages.SendMessageRequest(types.InputPeerUser(77,0),'hello'))
+
+    async def test_western_or_closed_console_never_changes_blocking_exception(self):
+        class Western(io.StringIO):
+            def write(self, text):
+                text.encode('cp1252')
+                return super().write(text)
+        class Closed:
+            def write(self, text):raise OSError('closed console')
+            def flush(self):raise OSError('closed console')
+        for stream in (Western(),Closed()):
+            with patch('sys.stdout',stream):
+                with self.assertRaises(TelegramDeletionBlocked):
+                    await self.client.delete_messages(77,[11])
+            with self.assertRaises(SafetyStop):self.journal.require_clear()
+
+    async def test_retry_task_survives_western_console_and_recovers_notification_delivery(self):
+        class Western(io.StringIO):
+            def write(self,text):
+                text.encode('cp1252')
+                return super().write(text)
+        self.journal.block('DeleteMessagesRequest')
+        notify=AsyncMock()
+        self.client.report_safety=AsyncMock(side_effect=[TimeoutError('PRIVATE_ERROR_TEXT'),None])
+        worker=SafetyNotifications(self.client,notify,42,'manager_007','service_bot',self.public)
+        cycles=0
+        async def sleep(_):
+            nonlocal cycles
+            cycles+=1
+            if cycles==2:raise asyncio.CancelledError()
+        stream=Western()
+        with patch('sys.stdout',stream),patch('telegram_safety.asyncio.sleep',side_effect=sleep):
+            with self.assertRaises(asyncio.CancelledError):await worker.run()
+        self.assertEqual(self.client.report_safety.await_count,2)
+        self.assertEqual(self.journal.current()['owner_queued'],1)
+        self.assertNotIn('PRIVATE_ERROR_TEXT',stream.getvalue())
 
     async def test_corrupt_safety_state_blocks_delivery(self):
         self.journal.path.write_bytes(b'broken')

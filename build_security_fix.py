@@ -13,10 +13,10 @@ def payload(root):
     accepted={}
     for name in FILES:
         accepted[name]=[]
-        for tag in ('v2.0.27','v2.0.28'):
+        for tag in ('v2.0.27','v2.0.28','v2.0.29'):
             result=subprocess.run(['git','show',tag+':'+name],cwd=root,capture_output=True)
             if result.returncode==0:accepted[name].append(digest(result.stdout))
-    return dict(format=1,version='2.0.29',files=files,accepted=accepted)
+    return dict(format=1,version='2.0.30',files=files,accepted=accepted)
 
 
 def build(root,output):
