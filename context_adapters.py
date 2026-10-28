@@ -9,8 +9,8 @@ def get_arbitration_context(inn):
     Получает судебные данные для юридического продукта.
     Вызывается только при включении адаптера в продуктовом пакете.
 
-    Ошибка API не останавливает подготовку предложения
-    юридических услуг. Результат передаётся в prompt как данные.
+    Результат передаётся в prompt как данные. Ошибка останавливает
+    подготовку в append_arbitration_context: старое дело не подставляется.
     """
     from arbitration_api import find_latest_defendant_case
 
@@ -70,6 +70,9 @@ def append_arbitration_context(prompt_text, inn):
     Правила подготовки сообщения остаются в продуктовом prompt.
     """
     arbitration_result = get_arbitration_context(inn)
+    if arbitration_result['status'] == 'ERROR':
+        raise RuntimeError('ТРЕБУЕТСЯ РУЧНАЯ ПРОВЕРКА: самое новое судебное дело не подтверждено. '
+                           + arbitration_result['reason'])
 
     context = {
         "ИНН_исследуемой_компании": str(inn).strip(),
@@ -88,6 +91,9 @@ def append_arbitration_context(prompt_text, inn):
         f"{prompt_text}\n\n"
         "ДАННЫЕ СУДЕБНОГО API В ФОРМАТЕ JSON:\n"
         f"{context_json}\n"
+        "Выбрано самое новое дело ответчика по дате регистрации, независимо от статуса. "
+        "Не заменяй его другим делом из веб-поиска, более старым или незавершённым. "
+        "Если реквизиты выбранного дела не подтверждены, требуется ручная проверка.\n"
     )
 
 

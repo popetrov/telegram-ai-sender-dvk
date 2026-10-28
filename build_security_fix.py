@@ -9,7 +9,9 @@ from install_security_fix import FILES,digest
 
 def payload(root):
     root=Path(root)
-    files={name:base64.b64encode((root/name).read_bytes()).decode() for name in FILES}
+    # Keep the standalone security repair frozen to its verified stable version.
+    # Later core features require their complete normal update, not a partial repair.
+    files={name:base64.b64encode(subprocess.run(['git','show','v2.0.30:'+name],cwd=root,capture_output=True,check=True).stdout).decode() for name in FILES}
     accepted={}
     for name in FILES:
         accepted[name]=[]

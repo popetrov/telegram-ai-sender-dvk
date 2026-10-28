@@ -251,6 +251,41 @@ def _get_case_details(case_id: str, api_key: str) -> dict | None:
     return case
 
 
+
+def _all_search_cases(target_inn, api_key):
+    """Read every declared page; partial or inconsistent results cannot prove newest."""
+    collected = {}
+    expected_pages = None
+    page = 1
+    while True:
+        data = _api_get(API_URL, {"Inn": target_inn, "InnType": "Respondent", "page": page}, api_key)
+        if data.get("Success") != 1:
+            raise ValueError("Не удалось загрузить все страницы судебного поиска.")
+        cases = data.get("Cases")
+        pages = data.get("PagesCount")
+        if type(pages) is not int or not 0 <= pages <= 1000 or not isinstance(cases, list):
+            raise ValueError("Не подтверждена полнота судебной выдачи (PagesCount/Cases).")
+        if expected_pages is None:
+            expected_pages = pages
+        elif pages != expected_pages:
+            raise ValueError("Судебная выдача изменилась во время поиска. Повторите проверку.")
+        if (pages == 0 and cases) or (pages > 1 and not cases):
+            raise ValueError("Неполная страница судебной выдачи.")
+        before = len(collected)
+        for case in cases:
+            if not isinstance(case, dict) or not case.get("CaseId"):
+                raise ValueError("В судебной выдаче отсутствует идентификатор дела.")
+            key = str(case["CaseId"])
+            if key in collected and collected[key] != case:
+                raise ValueError("Противоречивые повторные карточки судебного поиска.")
+            collected[key] = case
+        if page > 1 and len(collected) == before:
+            raise ValueError("Парсер повторил страницу; полнота выдачи не подтверждена.")
+        if page >= pages:
+            return list(collected.values())
+        page += 1
+
+
 def find_latest_defendant_case(inn: str) -> dict:
     """
     Ищет самое новое дело, в котором ИНН подтверждён как ИНН ответчика.
@@ -295,31 +330,7 @@ def find_latest_defendant_case(inn: str) -> dict:
         }
 
     try:
-        search_data = _api_get(
-            API_URL,
-            {
-                "Inn": target_inn,
-                "InnType": "Respondent",
-                "page": 1,
-            },
-            PARSER_API_KEY
-        )
-
-        if search_data.get("Success") != 1:
-            return {
-                "status": "ERROR",
-                "case": None,
-                "reason": "API не подтвердил успешный поиск."
-            }
-
-        cases = search_data.get("Cases") or []
-
-        if not isinstance(cases, list):
-            return {
-                "status": "ERROR",
-                "case": None,
-                "reason": "API вернул список дел в неожиданном формате."
-            }
+        cases = _all_search_cases(target_inn, PARSER_API_KEY)
 
         defendant_cases = []
 
@@ -343,90 +354,66 @@ def find_latest_defendant_case(inn: str) -> dict:
                 )
             }
 
-        defendant_cases.sort(
-            key=lambda item: _parse_date(item.get("StartDate")),
-            reverse=True
-        )
+        if any(_parse_date(c.get("StartDate")) == datetime.min for c in defendant_cases):
+            raise ValueError("Не удалось определить дату регистрации всех найденных дел; самое новое не подтверждено.")
+        defendant_cases.sort(key=lambda c: (_parse_date(c.get("StartDate")), str(c.get("CaseId"))), reverse=True)
+        search_case = defendant_cases[0]
+        case_id = str(search_case["CaseId"])
+        details = _get_case_details(case_id, PARSER_API_KEY)
+        if not details:
+            raise ValueError("Не удалось проверить карточку самого нового дела. Более старое дело не подставляется.")
+        if details.get("StartDate") and _parse_date(details["StartDate"]) != _parse_date(search_case["StartDate"]):
+            raise ValueError("Дата самого нового дела противоречит подробной карточке.")
+        matched_respondent = _find_party_by_identity(
+            search_case.get("Respondents") or [], details.get("Respondents") or [], target_inn)
+        if not matched_respondent:
+            raise ValueError("Ответчик самого нового дела не подтверждён. Более старое дело не подставляется.")
+        case_number = details.get("CaseNumber") or search_case.get("CaseNumber")
+        if not case_number:
+            raise ValueError("Не подтверждён номер самого нового дела.")
+        if details.get("CaseNumber") and search_case.get("CaseNumber") and details["CaseNumber"] != search_case["CaseNumber"]:
+            raise ValueError("Номер самого нового дела противоречит подробной карточке.")
 
-        for search_case in defendant_cases:
-            case_id = search_case.get("CaseId")
-
-            if not case_id:
-                continue
-
-            details = _get_case_details(
-                str(case_id),
-                PARSER_API_KEY
-            )
-
-            if not details:
-                continue
-
-            search_respondents = search_case.get("Respondents") or []
-            detailed_respondents = details.get("Respondents") or []
-
-            matched_respondent = _find_party_by_identity(
-                search_respondents,
-                detailed_respondents,
-                target_inn
-            )
-
-            if not matched_respondent:
-                continue
-
-            case_number = (
-                details.get("CaseNumber")
-                or search_case.get("CaseNumber")
-            )
-
-            if not case_number:
-                continue
-
-            case_result = {
-                "case_id": str(case_id),
-                "case_number": str(case_number),
-                "start_date": (
-                    details.get("StartDate")
-                    or search_case.get("StartDate")
-                ),
-                "defendant_inn": target_inn,
-                "defendant_name": matched_respondent.get("Name"),
-                "defendant_address": matched_respondent.get("Address"),
-                "plaintiffs": (
-                    _get_party_names(details.get("Plaintiffs"))
-                    or _get_party_names(search_case.get("Plaintiffs"))
-                ),
-                "respondents": _get_party_names(detailed_respondents),
-                "claim_sum": _get_claim_sum_from_details(details),
-                "case_type": (
-                    details.get("CaseType")
-                    or search_case.get("CaseType")
-                ),
-                "court": (
-                    details.get("Court")
-                    or search_case.get("Court")
-                ),
-                "state": (
-                    details.get("State")
-                    or search_case.get("State")
-                ),
-                "finished": details.get("Finished"),
-            }
-
-            return {
-                "status": "CONFIRMED",
-                "case": case_result,
-                "reason": None
-            }
+        case_result = {
+            "case_id": str(case_id),
+            "case_number": str(case_number),
+            "start_date": (
+                details.get("StartDate")
+                or search_case.get("StartDate")
+            ),
+            "defendant_inn": target_inn,
+            "defendant_name": matched_respondent.get("Name"),
+            "defendant_address": matched_respondent.get("Address"),
+            "plaintiffs": (
+                _get_party_names(details.get("Plaintiffs"))
+                or _get_party_names(search_case.get("Plaintiffs"))
+            ),
+            "respondents": _get_party_names(details.get("Respondents") or []),
+            "claim_sum": _get_claim_sum_from_details(details),
+            "case_type": (
+                details.get("CaseType")
+                or search_case.get("CaseType")
+            ),
+            "court": (
+                details.get("Court")
+                or search_case.get("Court")
+            ),
+            "state": (
+                details.get("State")
+                or search_case.get("State")
+            ),
+            "finished": details.get("Finished"),
+        }
 
         return {
-            "status": "NOT_FOUND",
-            "case": None,
-            "reason": (
-                "Дело найдено в поисковой выдаче, но не удалось "
-                "сопоставить ответчика с подробной карточкой."
-            )
+            "status": "CONFIRMED",
+            "case": case_result,
+            "reason": None
         }
+
+
+    except ValueError as error:
+        return {"status": "ERROR", "case": None, "reason": str(error)}
 
     except urllib.error.HTTPError as error:
         return {

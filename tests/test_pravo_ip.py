@@ -22,9 +22,9 @@ class LegalFixTests(unittest.TestCase):
         self.assertIsNone(api._find_party_by_identity(search,[dict(Name='Семенов Иван Иванович',Inn='999999999999')],'123456789012'))
 
     def test_ip_inn_available_only_in_details_is_checked(self):
-        search=dict(Success=1,Cases=[dict(CaseId='test-id',CaseNumber='А00-1/2026',
+        search=dict(Success=1,PagesCount=1,Cases=[dict(CaseId='test-id',CaseNumber='А00-1/2026',StartDate='2026-10-27',
                     Respondents=[dict(Name='ИП Тестовый Иван Иванович')])])
-        details=dict(Success=1,Cases=[dict(CaseId='test-id',CaseNumber='А00-1/2026',
+        details=dict(Success=1,Cases=[dict(CaseId='test-id',CaseNumber='А00-1/2026',StartDate='2026-10-27',
                      Respondents=[dict(Name='Тестовый Иван Иванович',Inn='123456789012')])])
         with patch('config.PARSER_API_KEY','fixture'),patch.object(api,'_api_get',side_effect=[search,details]):
             result=api.find_latest_defendant_case('123456789012')
@@ -32,7 +32,7 @@ class LegalFixTests(unittest.TestCase):
         self.assertEqual(result['case']['defendant_inn'],'123456789012')
         details['Cases'][0]['Respondents'][0].pop('Inn')
         with patch('config.PARSER_API_KEY','fixture'),patch.object(api,'_api_get',side_effect=[search,details]):
-            self.assertEqual(api.find_latest_defendant_case('123456789012')['status'],'NOT_FOUND')
+            self.assertEqual(api.find_latest_defendant_case('123456789012')['status'],'ERROR')
 
     def test_legal_prompt_uses_actual_sender_not_fixed_sergey(self):
         root=Path(ai.__file__).resolve().parent
