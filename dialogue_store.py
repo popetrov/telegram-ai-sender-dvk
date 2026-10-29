@@ -23,6 +23,9 @@ class ContactOptOutError(PermissionError):
 
 def require_contact_allowed(path, *, manager_id, peer_id):
     """First-contact delivery must also respect an opt-out recorded by part two."""
+    from incident_isolation import require_peer_allowed,PeerQuarantined
+    try:require_peer_allowed(peer_id)
+    except PeerQuarantined as exc:raise ContactOptOutError(str(exc)) from None
     path=Path(path)
     if not path.exists():return
     db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=10)

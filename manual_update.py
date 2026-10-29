@@ -18,7 +18,7 @@ import tempfile
 import zipfile
 
 RUNTIME = {
-    'incident_monitor.py',
+    'incident_monitor.py','incident_isolation.py',
     'legal_research.py',
     'safe_telegram.py','account_guard.py','telegram_safety.py',
     'center-public.json','app_profile_client.py','app_profile_protocol.py','app_profile_broker.py',

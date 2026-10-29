@@ -101,6 +101,11 @@ class ProtectedTelegramClient(TelegramClient):
                 if self._safety_failed:
                     raise SafetyStop('Защита переписки остановила отправку. Нужна проверка владельца.')
                 self.safety_journal.require_clear()
+                if peer is not None:
+                    from incident_isolation import require_peer_allowed,PeerQuarantined
+                    try:require_peer_allowed(peer)
+                    except PeerQuarantined:raise
+                    except Exception:self._deny('quarantine_state_unreadable')
 
     async def __call__(self, request, *args, **kwargs):
         if utils.is_list_like(request):
@@ -121,7 +126,9 @@ class ProtectedTelegramClient(TelegramClient):
                 if (getattr(item,'message','') or '').startswith(('/lease ','/app_profile ','/research_status ')):
                     continue
                 peer=getattr(getattr(item,'peer',None),'user_id',None)
-                if peer and peer != getattr(self,'_monitor_service_id',None):
+                cached=self._mb_entity_cache.get(peer) if peer else None
+                is_bot=bool(cached is not None and int(cached.ty)==ord('B'))
+                if peer and not is_bot and peer != getattr(self,'_monitor_service_id',None):
                     rid=record('send_attempt',peer_id=peer,operation=type(item).__name__)
                     tracked.append((rid,peer))
         try:

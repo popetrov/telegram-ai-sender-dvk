@@ -115,7 +115,7 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
   doc=message.reply_document.await_args.kwargs['document'];report=json.loads(doc.getvalue())
   self.assertEqual(report['account_id'],42);self.assertEqual(len(report['events']),1)
 
- async def test_observed_private_deletion_stops_and_notifies_once(self):
+ async def test_observed_private_deletion_isolates_and_notifies_once(self):
   class Dummy:
    def __init__(self):self.handlers=[];self.get_messages=AsyncMock(return_value=[SimpleNamespace(id=321,message='not exported')])
    def add_event_handler(self,callback,event):self.handlers.append(callback)
@@ -131,8 +131,10 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(len(client.handlers),2)
     event=SimpleNamespace(is_channel=False,deleted_ids=[321])
     await client.handlers[0](event);await client.handlers[0](event)
-    self.assertEqual(journal.current()['operation'],'observed_telegram_deletion');notify.assert_awaited_once()
-    with self.assertRaises(SafetyStop):journal.require_clear()
+    self.assertIsNone(journal.current());notify.assert_awaited_once()
+    from incident_isolation import require_peer_allowed,PeerQuarantined
+    with self.assertRaises(PeerQuarantined):require_peer_allowed(77,self.recorder)
+    require_peer_allowed(88,self.recorder);journal.require_clear()
    finally:
     task.cancel()
     try:await task

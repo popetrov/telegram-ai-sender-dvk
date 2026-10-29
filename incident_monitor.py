@@ -88,14 +88,20 @@ class Recorder:
             raise ValueError('Unsafe monitor journal')
         db = sqlite3.connect(self.path, timeout=10)
         db.row_factory = sqlite3.Row
-        db.executescript('''CREATE TABLE IF NOT EXISTS monitor_events (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT UNIQUE NOT NULL,
-            data TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS monitor_messages (
-            message_id INTEGER PRIMARY KEY, peer_id INTEGER, seen INTEGER NOT NULL,
-            misses INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS monitor_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS monitor_pending ON monitor_events(acknowledged,sequence);''')
+        try:
+            db.executescript('''CREATE TABLE IF NOT EXISTS monitor_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT UNIQUE NOT NULL,
+                data TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS monitor_messages (
+                message_id INTEGER PRIMARY KEY, peer_id INTEGER, seen INTEGER NOT NULL,
+                misses INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS monitor_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS monitor_pending ON monitor_events(acknowledged,sequence);''')
+            from incident_isolation import initialize as initialize_isolation
+            initialize_isolation(db)
+        except BaseException:
+            db.close()
+            raise
         return db
 
     def record(self, kind, **fields):
@@ -208,6 +214,17 @@ def record(kind, **fields):
 
 def startup(account_id):
     _default.bind(account_id,os.getenv('MANAGER_ID',''))
+    import config
+    _default.seed(ROOT/config.DATABASE_PATH)
+    from incident_isolation import migrate_observed_pause,reconcile_history
+    from telegram_safety import default_journal
+    try:
+        reconcile_history(_default,ROOT/config.DATABASE_PATH)
+        migrate_observed_pause(_default,ROOT/config.DATABASE_PATH,default_journal())
+    except Exception as exc:
+        # Incomplete mandatory isolation never permits client delivery.
+        default_journal().block('observed_monitor_unavailable')
+        record('monitor_warning',error_type=type(exc).__name__,reason_code='scope_migration_deferred')
     files = {}
     for name in ('safe_telegram.py','access_runtime.py','main.py','startup_update.py','bot.py',
                  'incident_monitor.py','telegram_client.py','telegram_safety.py','app_profile_client.py',
@@ -310,6 +327,11 @@ class ErrorRecorder(logging.Handler):
             import re
             logger=event.name if re.fullmatch(r'[A-Za-z0-9_.-]{1,100}',event.name) else 'other'
             error_type=event.exc_info[0].__name__ if event.exc_info else 'LogWarning'
+            if not event.exc_info and isinstance(event.args,tuple):
+                # Keep only a safe exception class code, never the formatted message.
+                for arg in event.args:
+                    if isinstance(arg,str) and re.fullmatch(r'[A-Z][A-Za-z0-9_]{1,80}(?:Error|Stop|Denied|Unavailable)',arg):
+                        error_type=arg;break
             key=(logger,event.levelno,error_type)
             now=time.monotonic()
             if now-self.last.get(key,-1000)<60:return
@@ -338,16 +360,28 @@ async def run(client, notify):
                 default_journal().delivered(incident['incident_id'],'manager_notified')
             except Exception:pass
 
+    async def localize_missing(ids,source):
+        from incident_isolation import isolate
+        import config
+        try:return isolate(_default,ids,ROOT/config.DATABASE_PATH,source)
+        except Exception:
+            await stop_observed('observed_monitor_unavailable')
+            raise
+
     async def deleted(event):
         if getattr(event,'is_channel',False):
             return
         ids = list(event.deleted_ids)
         with closing(_default.connect()) as db:
             tracked=[mid for mid in ids if db.execute('SELECT 1 FROM monitor_messages WHERE message_id=?',(mid,)).fetchone()]
+        scope=await localize_missing(tracked,'telegram_deleted') if tracked else None
         record('telegram_deleted',message_ids=ids[:2000],count=len(ids),
-               source='tracked_private_history' if tracked else 'unattributed_update')
-        if tracked:
+               source='tracked_private_history' if tracked else 'unattributed_update',
+               reason_code='peer_isolated' if scope and not scope['unresolved'] else 'unresolved_scope')
+        if scope and scope['unresolved']:
             await stop_observed('observed_telegram_deletion')
+        from incident_isolation import notify_pending
+        await notify_pending(_default,notify)
 
     async def message(event):
         msg = event.message
@@ -408,11 +442,15 @@ async def run(client, notify):
                     if ids:
                         found=await client.get_messages(None,ids=ids)
                         present={m.id for m in found if m and getattr(m,'message',None) is not None}
-                        if _default.apply_check(ids,present):
-                            await stop_observed('observed_history_missing')
+                        missing=_default.apply_check(ids,present)
+                        if missing:
+                            scope=await localize_missing(missing,'history_missing')
+                            if scope['unresolved']:await stop_observed('observed_history_missing')
                 except Exception as exc:
                     record('runtime_error',error_type=type(exc).__name__,stage='history_check')
                     print('Проверка истории отложена ('+type(exc).__name__+').',flush=True)
+            from incident_isolation import notify_pending
+            await notify_pending(_default,notify)
             try:
                 await flush(client)
             except Exception as exc:
@@ -447,11 +485,22 @@ def center_notice(store, notices, account_id, event_id, data):
         return
     from owner_notifications import manager_label
     label=manager_label(store,account_id)
-    notices.once('monitor:'+str(account_id)+':'+event_id,
-                 'Контроль переписки: '+label+'. '+
-                 ('Опасный запрос заблокирован программой.' if row['kind']=='request_blocked' else
-                  'Получен сигнал об удалении или исчезновении сообщений. Кто удалил — пока неизвестно.')+
-                 ' Требуется проверка журнала. Код события: '+event_id)
+    if row['kind']=='request_blocked':
+        notices.once('monitor:'+str(account_id)+':'+event_id,
+            'Контроль переписки: '+label+'. Опасный запрос заблокирован программой. Требуется проверка журнала. Код события: '+event_id)
+        return
+    for mid in dict.fromkeys(row.get('message_ids',[])):
+        # Old installations used event IDs: don't alert again for a historical case.
+        with store.connection() as db:
+            legacy=db.execute("""SELECT 1 FROM events e JOIN owner_notices n
+                ON n.notice_key='monitor:' || e.account_id || ':' || e.event_id
+                WHERE e.account_id=? AND json_extract(e.payload,'$.data.table')='monitor_events'
+                AND EXISTS(SELECT 1 FROM json_each(json_extract(e.payload,'$.data.row.message_ids')) WHERE value=?) LIMIT 1""",(account_id,mid)).fetchone()
+        if legacy:continue
+        scope=(' Этот диалог изолирован; другие диалоги этим событием не блокируются.' if row.get('reason_code')=='peer_isolated' else '')
+        notices.once('monitor-message:'+str(account_id)+':'+str(mid),
+            'Контроль переписки: '+label+'. Получен сигнал об исчезновении сообщения '+str(mid)+'.'+scope+
+            ' Инициатор удаления не установлен. Подтверждения сохраняются в том же случае. Код события: '+event_id)
 
 
 def validate_bound_event(data,account_id,subject):
@@ -521,7 +570,12 @@ def register_admin(application, store, admin_id):
         text+='\nВ последних '+str(len(events))+' событиях:\nПопытки отправки: '+str(counts.get('send_attempt',0))
         text+='\nОтветы Telegram об отправке: '+str(counts.get('send_result',0))
         text+='\nОшибки отправки: '+str(counts.get('send_error',0))
-        text+='\nСигналы удаления: '+str(counts.get('telegram_deleted',0)+counts.get('history_missing',0))
+        deleted={mid for e in events if e['event']['kind']=='telegram_deleted' and e['event'].get('source')=='tracked_private_history' for mid in e['event'].get('message_ids',[])}
+        confirmed={mid for e in events if e['event']['kind']=='history_missing' for mid in e['event'].get('message_ids',[])}
+        baseline={mid for e in events if e['event']['kind']=='baseline_missing' for mid in e['event'].get('message_ids',[])}
+        text+='\nРазных сообщений с сигналом/подтверждением: '+str(len(deleted|confirmed))
+        text+='\nПодтверждено повторной проверкой: '+str(len(confirmed))
+        text+='\nОтсутствовали уже при запуске контроля: '+str(len(baseline))
         text+='\nЗаблокированные запросы: '+str(counts.get('request_blocked',0))
         text+='\nОшибки программы: '+str(counts.get('runtime_error',0))
         text+='\nЭто события журнала, не полный итог рассылки.'

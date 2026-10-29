@@ -11,7 +11,7 @@ from transition_setup import CORE, BUNDLE_FILES
 
 ROOT = Path(__file__).resolve().parent
 CENTER_FILES = {
-    'incident_monitor.py',
+    'incident_monitor.py','incident_isolation.py',
     'safe_telegram.py','telegram_safety.py',
     'app_profile_server.py','app_profile_protocol.py','app_profile_broker.py','telegram_app_migrate.py','telegram_app_trust.py',
     'access_server.py', 'access_lease.py', 'access_runtime.py', 'authority_store.py',
