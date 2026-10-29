@@ -70,6 +70,15 @@ class ProtectedTelegramClient(TelegramClient):
         # Block even if disk persistence fails. Never log message IDs/text/peers.
         self._safety_failed = True
         try:
+            from incident_monitor import record
+            import traceback
+            from pathlib import Path
+            stack=[dict(file=Path(f.filename).name,line=f.lineno,function=f.name)
+                   for f in traceback.extract_stack(limit=16)]
+            record('request_blocked', operation=operation, call_stack=stack)
+        except Exception:
+            pass
+        try:
             code = self.safety_journal.block(operation)['incident_id']
         except Exception:
             code = 'journal_unavailable'
@@ -86,7 +95,7 @@ class ProtectedTelegramClient(TelegramClient):
             if name.startswith(('Send', 'Forward', 'Edit')) or name == 'StartBotRequest':
                 allowed = _report_permission.get()
                 peer = getattr(getattr(item, 'peer', None), 'user_id', None)
-                if (name == 'SendMessageRequest' and allowed is not None
+                if (name in ('SendMessageRequest','SendMediaRequest') and allowed is not None
                         and peer == allowed[0] and getattr(item, 'message', None) == allowed[1]):
                     continue
                 if self._safety_failed:
@@ -104,7 +113,36 @@ class ProtectedTelegramClient(TelegramClient):
         if utils.is_list_like(request):
             request = list(request)
         self._check_request(request)
-        return await super()._call(sender, request, *args, **kwargs)
+        tracked=[]
+        from incident_monitor import record
+        for item in requests_in(request):
+            if type(item).__name__=='SendMessageRequest' and _report_permission.get() is None:
+                # These are our authenticated technical protocols, not client history.
+                if (getattr(item,'message','') or '').startswith(('/lease ','/app_profile ','/research_status ')):
+                    continue
+                peer=getattr(getattr(item,'peer',None),'user_id',None)
+                if peer and peer != getattr(self,'_monitor_service_id',None):
+                    rid=record('send_attempt',peer_id=peer,operation=type(item).__name__)
+                    tracked.append((rid,peer))
+        try:
+            result=await super()._call(sender, request, *args, **kwargs)
+        except BaseException as exc:
+            for rid,peer in tracked:
+                record('send_error',request_id=rid,peer_id=peer,error_type=type(exc).__name__)
+            raise
+        for rid,peer in tracked:
+            ids=[]
+            for response in result if isinstance(result,list) else [result]:
+                if type(response).__name__=='UpdateShortSentMessage':
+                    ids.append(response.id)
+                for update in getattr(response,'updates',[]):
+                    message=getattr(update,'message',None)
+                    if message is not None and getattr(message,'out',False):
+                        ids.append(message.id)
+            record('send_result',request_id=rid,peer_id=peer,message_ids=ids)
+            from incident_monitor import _default
+            _default.observe(ids,peer)
+        return result
 
     async def delete_messages(self, *args, **kwargs):
         self._deny('delete_messages')

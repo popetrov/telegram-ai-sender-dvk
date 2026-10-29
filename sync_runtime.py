@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import time
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 import base64
 from access_runtime import transport_lock, cleanup_service_messages
@@ -40,8 +41,14 @@ def register_receiver(application, store, signing_key, encryption_key, notices=N
                     or data.get('data', {}).get('table') not in (*TABLES, 'sync_fragment', 'sync_batch')):
                 raise ValueError('Invalid sync data')
             digest = event_digest(data)
+            if data.get('data',{}).get('table')=='monitor_events':
+                from incident_monitor import validate_event
+                validate_event(data['data'].get('row'))
             stage = 'save'
             store.receive(update.effective_user.id, subject, event_id, digest, data)
+            if notices is not None:
+                from incident_monitor import center_notice
+                center_notice(store,notices,update.effective_user.id,event_id,data)
             stage = 'receipt'
             await update.effective_message.reply_text('DVK_RECEIPT ' + json.dumps(
                 receipt(signing_key, subject, event_id, digest), separators=(',', ':')), disable_notification=True)
@@ -74,8 +81,17 @@ async def start(client):
 
     async def poll():
         from database import get_connection
+        notice_retry_at=0
         while True:
             try:
+                if time.monotonic()>=notice_retry_at:
+                    notice_retry_at=time.monotonic()+60
+                    try:
+                        from legal_research import flush_notices
+                        async with transport_lock:
+                            await flush_notices(client,authority,subject,key)
+                    except Exception as exc:
+                        log.warning('Research notice pending (%s); normal sync continues',type(exc).__name__)
                 with get_connection() as db:
                     transfer = next_transfer(db)
                 if transfer is None:

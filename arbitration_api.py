@@ -5,12 +5,47 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+import hashlib
+import threading
+import time
+from contextlib import contextmanager
 
 
 API_URL = "https://parser-api.com/parser/arbitr_api/search"
 DETAILS_URL = "https://parser-api.com/parser/arbitr_api/details_by_id"
 
-REQUEST_TIMEOUT = 60
+REQUEST_TIMEOUT = 30
+MAX_ATTEMPTS = 3
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_transport_lock = threading.RLock()
+_blocked_keys = {}
+_cooldowns = {}
+_observers = threading.local()
+
+
+class ParserFailure(RuntimeError):
+    def __init__(self, reason, code='temporary', retryable=True):
+        super().__init__(reason)
+        self.code, self.retryable = code, retryable
+
+
+@contextmanager
+def observe_requests(callback):
+    previous = getattr(_observers, 'callback', None)
+    _observers.callback = callback
+    try:yield
+    finally:_observers.callback = previous
+
+
+def _observe(**event):
+    callback = getattr(_observers, 'callback', None)
+    if callback:callback(event)
+
+
+def reset_service_block(api_key):
+    """Explicit retry after payment/key repair, never implicit per-row retries."""
+    with _transport_lock:
+        _blocked_keys.pop(hashlib.sha256(api_key.encode()).hexdigest(), None)
 
 
 def _normalize_inn(inn: str) -> str:
@@ -38,18 +73,63 @@ def _api_get(url: str, params: dict, api_key: str) -> dict:
         headers={"User-Agent": "Mozilla/5.0"}
     )
 
-    with urllib.request.urlopen(
-        request,
-        timeout=REQUEST_TIMEOUT
-    ) as response:
-        body = response.read().decode("utf-8")
-
-    data = json.loads(body)
-
-    if not isinstance(data, dict):
-        raise RuntimeError("API вернул ответ неожиданного формата.")
-
-    return data
+    fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
+    endpoint = url.rsplit('/', 1)[-1]
+    # One parser request at a time also makes a permanent block stop the rest of a batch.
+    with _transport_lock:
+        if fingerprint in _blocked_keys:
+            raise _blocked_keys[fingerprint]
+        cooldown=_cooldowns.get(fingerprint)
+        if cooldown and cooldown[0]>time.monotonic():
+            raise ParserFailure('Временная пауза после ошибки парсера: '+str(cooldown[1]),cooldown[1].code,True)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+                    raw=response.read(MAX_RESPONSE_BYTES+1)
+                    if len(raw)>MAX_RESPONSE_BYTES:
+                        raise ParserFailure('Ответ парсера слишком велик для безопасной обработки. Нужна проверка карточки.','verification',False)
+                    data = json.loads(raw.decode('utf-8'),parse_float=str)
+                if not isinstance(data, dict):raise ParserFailure('Парсер вернул некорректный формат.')
+                code = str(data.get('error_code', data.get('ErrorCode', '')))
+                if code == '40305':
+                    raise ParserFailure('Исчерпан месячный лимит parser-api.com (40305). Руководителю нужно увеличить лимит; затем нажмите «Повторить исследования».', 'quota', False)
+                if data.get('Success') != 1:
+                    raise ParserFailure('Парсер временно не выполнил запрос '+endpoint+'.', 'provider', True)
+                _observe(endpoint=endpoint, params=params, attempt=attempt, response=data)
+                return data
+            except urllib.error.HTTPError as error:
+                code = ''
+                try:
+                    body = json.loads(error.read(8192).decode('utf-8'))
+                    if isinstance(body, dict):code = str(body.get('error_code', ''))
+                except (ValueError, UnicodeError):pass
+                if code == '40305':
+                    failure = ParserFailure('Исчерпан месячный лимит parser-api.com (40305). Руководителю нужно увеличить лимит; затем нажмите «Повторить исследования».', 'quota', False)
+                elif error.code in (401, 403):
+                    failure = ParserFailure('Парсер отклонил ключ или доступ (HTTP '+str(error.code)+'). Проверьте PARSER_API_KEY и доступ к сервису.', 'credentials', False)
+                elif error.code==429:
+                    try:delay=max(1,min(3600,int(error.headers.get('Retry-After','30'))))
+                    except (ValueError,TypeError):delay=30
+                    failure=ParserFailure('Парсер ограничил частоту запросов. Пауза '+str(delay)+' сек.; затем повторите незавершённые исследования.','rate_limit',True)
+                    _cooldowns[fingerprint]=(time.monotonic()+delay,failure)
+                else:
+                    failure = ParserFailure('Ошибка парсера HTTP '+str(error.code)+'.', 'http_'+str(error.code), error.code in (408,429,500,502,503,504))
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+                failure = ParserFailure('Не удалось дождаться ответа парсера.', 'network', True)
+            except (ValueError, UnicodeError):
+                failure = ParserFailure('Парсер вернул нечитаемый ответ.', 'invalid_response', True)
+            except ParserFailure as error:
+                failure = error
+            _observe(endpoint=endpoint, params=params, attempt=attempt, error_code=failure.code, reason=str(failure))
+            if failure.code=='rate_limit':raise failure
+            if not failure.retryable:
+                if failure.code in ('quota','credentials'):_blocked_keys[fingerprint] = failure
+                raise failure
+            if attempt == MAX_ATTEMPTS:
+                exhausted=ParserFailure(str(failure)+' Выполнено попыток: '+str(attempt)+'. Можно повторить только незавершённые исследования.', failure.code, True)
+                _cooldowns[fingerprint]=(time.monotonic()+30,exhausted)
+                raise exhausted
+            time.sleep(attempt)
 
 
 def _get_party_names(parties) -> list[str]:
@@ -122,6 +202,9 @@ def _find_party_by_identity(search_parties, detailed_parties, target_inn):
 
         for detailed_party in detailed_parties:
             if not isinstance(detailed_party, dict):
+                continue
+            detailed_inn = _normalize_inn(detailed_party.get('Inn'))
+            if detailed_inn and detailed_inn != target_inn:
                 continue
 
             detailed_name = _normalize_text(detailed_party.get("Name"))
@@ -227,11 +310,12 @@ def _get_claim_sum_from_details(case: dict) -> str | None:
 
 def _get_case_details(case_id: str, api_key: str) -> dict | None:
     """Загружает подробную карточку дела."""
-    data = _api_get(
-        DETAILS_URL,
-        {"CaseId": case_id},
-        api_key
-    )
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        data = _api_get(DETAILS_URL, {"CaseId": case_id}, api_key)
+        if data.get('Cases') or data.get('Success') != 1:break
+        if attempt == MAX_ATTEMPTS:
+            raise ParserFailure('Карточка самого нового дела пока пуста. Более старое дело не подставляется.', 'card_pending', True)
+        time.sleep(attempt)
 
     if data.get("Success") != 1:
         return None
@@ -245,10 +329,27 @@ def _get_case_details(case_id: str, api_key: str) -> dict | None:
 
     returned_id = str(case.get("CaseId") or "").strip()
 
-    if returned_id and returned_id != str(case_id).strip():
-        return None
+    if returned_id != str(case_id).strip():
+        raise ParserFailure('ID подробной карточки не совпал с выбранным самым новым делом. Отправка запрещена.','identity',False)
 
     return case
+
+
+def case_events(case):
+    """Keep source event semantics: filing is not acceptance or a court outcome."""
+    events=[]
+    for instance in case.get('CaseInstances') or []:
+        if not isinstance(instance,dict):continue
+        for event in instance.get('InstanceEvents') or []:
+            if not isinstance(event,dict):continue
+            date=event.get('Date') or event.get('PublishDate')
+            if _parse_date(date)==datetime.min:continue
+            link=event.get('File')
+            if not isinstance(link,str) or urllib.parse.urlparse(link).hostname!='kad.arbitr.ru':link=None
+            events.append(dict(id=event.get('Id'),date=date,type=event.get('EventTypeName'),
+                content=event.get('EventContentTypeName'),document_url=link,
+                claim_sum=event.get('ClaimSum'),declarer_inn=event.get('DeclarerInn')))
+    return sorted(events,key=lambda e:(_parse_date(e['date']),str(e['id'] or '')),reverse=True)
 
 
 
@@ -403,6 +504,9 @@ def find_latest_defendant_case(inn: str) -> dict:
                 or search_case.get("State")
             ),
             "finished": details.get("Finished"),
+            "latest_event": next(iter(case_events(details)),None),
+            "events": case_events(details),
+            "card_url": 'https://kad.arbitr.ru/Card/'+str(case_id),
         }
 
         return {
@@ -412,8 +516,11 @@ def find_latest_defendant_case(inn: str) -> dict:
         }
 
 
+    except ParserFailure as error:
+        return {"status":"ERROR","case":None,"reason":str(error),"error_code":error.code,"retryable":error.retryable}
+
     except ValueError as error:
-        return {"status": "ERROR", "case": None, "reason": str(error)}
+        return {"status": "ERROR", "case": None, "reason": str(error),"error_code":"verification","retryable":False}
 
     except urllib.error.HTTPError as error:
         return {
@@ -443,6 +550,6 @@ def find_latest_defendant_case(inn: str) -> dict:
             "reason": (
                 "Непредвиденная ошибка при поиске "
                 "или проверке дела: "
-                f"{type(error).__name__}: {error}"
+                f"{type(error).__name__}"
             )
         }

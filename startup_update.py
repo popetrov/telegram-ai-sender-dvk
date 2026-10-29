@@ -25,6 +25,22 @@ REPOSITORY = 'popetrov/telegram-ai-sender-dvk'
 API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 LATEST_PAGE = f'https://github.com/{REPOSITORY}/releases/latest'
 MAX_BYTES = 64 * 1024 * 1024
+_network_stage = 'release_metadata'
+
+
+def update_failure_report(root, active, exc):
+    """Safe structured diagnostics: no URLs with credentials or exception prose."""
+    import time
+    reason=getattr(exc,'reason',None)
+    report=dict(recorded_at=int(time.time()),stage=_network_stage,error_type=type(exc).__name__,
+                reason_type=type(reason).__name__ if reason is not None else None,
+                errno=getattr(reason,'errno',None),http_status=getattr(exc,'code',None),
+                folder_id=hashlib.sha256(str(active).encode()).hexdigest(),
+                version=(active/'version.txt').read_text('utf-8-sig').strip())
+    path=root/'data/update-network-report.json'
+    path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    return path
 LEGACY_FILES = {'ai.py', 'arbitration_api.py', 'bot.py', 'database.py', 'launcher.py',
                 'main.py', 'products.json', 'updater.py', 'version.txt',
                 'prompts/bg.md', 'prompts/credit.md', 'prompts/pravo_ip.md',
@@ -38,6 +54,8 @@ def version(value):
 
 
 def fetch(url):
+    global _network_stage
+    _network_stage='release_metadata' if url==API else 'release_asset'
     # Only official repository release assets/API. TLS validation stays enabled.
     prefixes = (API, f'https://github.com/{REPOSITORY}/releases/download/')
     if not any(url.startswith(prefix) for prefix in prefixes):
@@ -53,6 +71,8 @@ def fetch(url):
 def release_metadata():
     try:return json.loads(fetch(API))
     except (urllib.error.URLError,TimeoutError):
+        global _network_stage
+        _network_stage='release_latest_redirect'
         # GitHub's stable-latest permalink excludes prereleases. Do not use the
         # Atom feed: a newer pilot there must never become a production update.
         request=urllib.request.Request(LATEST_PAGE,headers={'User-Agent':'DVK-Startup'})
@@ -270,6 +290,11 @@ def run(root, *, updates=True, discover=latest_bundle, prepare=prepare_update, l
                         active = candidate
                     print('Обновление готово. Запускаю программу.', flush=True)
             except Exception as exc:
+                try:
+                    update_failure_report(root,active,exc)
+                    print('Отчёт: data/update-network-report.json. Настройки сети и папку не меняйте без проверки отчёта.',flush=True)
+                except Exception:
+                    pass
                 # Log only type: subprocess/HTTP errors can include local settings.
                 print('Обновление отложено. Запускаю прежнюю версию. Причина: ' + type(exc).__name__, flush=True)
         # No rollback after launch: the new sender may already have sent messages.

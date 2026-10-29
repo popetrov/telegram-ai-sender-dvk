@@ -121,7 +121,6 @@ def generate_company_analysis(
                   username=str(username or "").strip())
     prompt_file = settings["prompt"]
     prompt_text = catalog.render(normalized_product, inputs)
-    prompt_text = apply_context_adapters(settings["context_adapters"], prompt_text, inputs)
     if normalized_product in {'Право_ООО','Право_ИП'}:
         import re
         if not sender_name:
@@ -132,6 +131,10 @@ def generate_company_analysis(
                         '\nПредставляй отправителя только этим именем. Не добавляй фамилию, '
                         'отчество, должность или рекламу из профиля Telegram. '
                         'ФИО клиента не является именем отправителя.\n')
+        from legal_research import run
+        return run(dict(inn=inputs['inn'],full_name=inputs['full_name'],username=inputs['username'],
+                        product=normalized_product,fields=inputs),name,settings,prompt_text,OpenAI)
+    prompt_text = apply_context_adapters(settings["context_adapters"], prompt_text, inputs)
 
     if not config.OPENAI_API_KEY:
         raise RuntimeError(

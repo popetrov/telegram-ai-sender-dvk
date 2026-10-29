@@ -21,3 +21,6 @@ main_before*.py
 
 # Local/CI test reports
 test-results/
+
+# Generated verification builds
+dist-*/

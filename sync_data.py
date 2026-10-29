@@ -3,7 +3,7 @@ import json
 import uuid
 
 DIALOGUE_TABLES = ('dialogue_threads','dialogue_messages','dialogue_actions','dialogue_notices')
-TABLES = ('clients', 'research_runs', 'messages', 'imports', 'prepared_messages', 'uploaded_rows') + DIALOGUE_TABLES
+TABLES = ('clients', 'research_runs', 'messages', 'imports', 'prepared_messages', 'uploaded_rows', 'monitor_events') + DIALOGUE_TABLES
 
 
 def initialize(db):

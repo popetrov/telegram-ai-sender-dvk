@@ -174,10 +174,13 @@ async def main():
     spam_task = None
     dialogue_task = None
     safety_task = None
+    monitor_task = None
 
     try:
         await ensure_telegram_authorized()
         await connect()
+        import incident_monitor
+        incident_monitor.startup((await client.get_me()).id)
         access_task = await access_runtime.start(client)
         sync_task = await sync_runtime.start(client)
 
@@ -203,6 +206,15 @@ async def main():
                                      config.MANAGER_ID, os.environ.get('ACCESS_BOT_USERNAME', ''),
                                      os.environ.get('ACCESS_PUBLIC_KEY', ''))
         safety_task = asyncio.create_task(safety.run(), name='telegram-safety-notifications')
+        monitor_task = asyncio.create_task(incident_monitor.run(client,notify_spam),name='incident-monitor')
+        def monitor_finished(task):
+            if not task.cancelled() and task.exception() is not None:
+                from telegram_safety import default_journal
+                default_journal().block('observed_monitor_unavailable')
+                try:incident_monitor.record('runtime_error',error_type=type(task.exception()).__name__,stage='monitor_task_failed')
+                except Exception:pass
+                print('Контроль переписки недоступен. Отправки остановлены; требуется проверка владельца.',flush=True)
+        monitor_task.add_done_callback(monitor_finished)
         spam_task = await spam_monitor.start(client,notify_spam)
         try:
             import dialogue_runtime
@@ -226,6 +238,10 @@ async def main():
             await bot.shutdown()
 
     finally:
+        await access_runtime.stop(monitor_task)
+        if 'incident_monitor' in locals():
+            try:incident_monitor.record('shutdown')
+            except Exception:pass
         await access_runtime.stop(safety_task)
         await access_runtime.stop(dialogue_task)
         await access_runtime.stop(spam_task)

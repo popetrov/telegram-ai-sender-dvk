@@ -7,6 +7,7 @@ from telegram.ext import MessageHandler,CommandHandler,CallbackQueryHandler,Appl
 SENDER={
     '📋 Очередь':('queue','Восстановить очередь'),
     '✍️ Подготовить сообщения':('confirm','Подготовить сообщения из Excel'),
+    '🔄 Повторить исследования':('retry_research','Повторить только незавершённые исследования'),
     '🛑 Отменить очередь':('cancel','Отменить запланированную очередь'),
     '🔑 Проверить доступ':('access','Проверить центральный доступ'),
     '💬 Диалоги':('dialogues','Диалоги и ручное управление'),
@@ -17,6 +18,7 @@ SENDER={
     '🏠 Меню':('menu','Показать кнопки'),
 }
 ADMIN={
+    '🛡 Контроль переписки':('monitor','Контроль работы программ менеджеров'),
     '👥 Менеджеры':('users','Список менеджеров'),
     '🏢 Компании':('companies','Список компаний'),
     '✅ Выдать доступ':('approve','Выдать доступ менеджеру'),
@@ -40,8 +42,27 @@ PROMPTS={
 PENDING='button_menu_pending'
 
 
+def sender_actions():
+    """Keep other businesses' menus unchanged until this manager actually uses legal research."""
+    import sqlite3
+    from pathlib import Path
+    import config
+    available=False
+    path=Path(config.DATABASE_PATH)
+    if path.is_file():
+        db=None
+        try:
+            db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='legal_research_jobs'").fetchone():
+                available=bool(db.execute('SELECT 1 FROM legal_research_jobs WHERE manager=? LIMIT 1',(config.MANAGER_ID,)).fetchone())
+        except sqlite3.Error:pass
+        finally:
+            if db is not None:db.close()
+    return {label:value for label,value in SENDER.items() if available or value[0]!='retry_research'}
+
+
 def keyboard(role='sender'):
-    labels=list(ADMIN if role=='admin' else SENDER)
+    labels=list(ADMIN if role=='admin' else sender_actions())
     return ReplyKeyboardMarkup([labels[i:i+2] for i in range(0,len(labels),2)],resize_keyboard=True,is_persistent=True)
 
 
@@ -136,7 +157,7 @@ def register(application,*,role,allowed):
 
 async def publish(application,account_id,role):
     """Install Telegram's slash-menu too and show the keyboard after app startup."""
-    actions=ADMIN if role=='admin' else SENDER
+    actions=ADMIN if role=='admin' else sender_actions()
     unique={command:description for command,description in actions.values() if command!='upload'}
     unique['menu']='Показать кнопки'
     await application.bot.set_my_commands([BotCommand(k,v) for k,v in unique.items()],scope=BotCommandScopeChat(account_id))

@@ -1156,6 +1156,9 @@ async def prepare_one_client(
             **sender_fields,
         )
     except Exception as exc:
+        from legal_research import ResearchProblem
+        if isinstance(exc,ResearchProblem):
+            return (exc.status,str(exc),None)
         return (
             "research_failed",
             f"Ошибка исследования: {type(exc).__name__}: {exc}",
@@ -1210,11 +1213,43 @@ async def prepare_one_client(
             None,
         )
 
+    if analysis.get('legal_job_key'):
+        from legal_research import Journal
+        try:Journal(config.MANAGER_ID).ready(analysis['legal_job_key'])
+        except Exception:
+            # The prepared row is durable; a later retry restores it before any new research.
+            pass
     return (
         "prepared",
-        "Сообщение подготовлено и сохранено в SQLite.",
+        ("Сообщение подготовлено по проверенным судебным реквизитам и сохранено в SQLite."
+         + (" Использована стандартная формулировка по проверенным фактам." if analysis.get('legal_fallback') else '')
+         if analysis.get('legal_job_key') else "Сообщение подготовлено и сохранено в SQLite."),
         item,
     )
+
+
+async def retry_research_command(update,context):
+    if not user_is_allowed(update):
+        await update.effective_message.reply_text('Нет доступа. Проверьте /access.');return
+    old=context.application.bot_data.get(QUEUE_KEY)
+    if context.application.bot_data.get(PREPARING_KEY) or (old and old.get('state') in {'preparing','scheduled','sending'}):
+        await update.effective_message.reply_text('Подготовка или запланированная отправка уже выполняется. Сначала завершите её; очередь не изменена.');return
+    if context.user_data.get('pending_rows'):
+        await update.effective_message.reply_text('Уже загружен новый Excel. Подтвердите или отмените его перед повтором исследований.');return
+    from legal_research import Journal
+    from arbitration_api import reset_service_block
+    rows=Journal(config.MANAGER_ID).retry_rows()
+    if not rows:
+        await update.effective_message.reply_text('Незавершённых исследований ДВК Право нет.');return
+    reset_service_block(config.PARSER_API_KEY)
+    context.user_data['pending_rows']=rows
+    context.user_data['pending_file_name']='Повтор незавершённых исследований ДВК Право'
+    context.user_data['_research_kept_items']=list(old.get('items',[])) if old and old.get('state') in {'awaiting_time','awaiting_confirmation'} else []
+    context.application.bot_data.pop(QUEUE_KEY,None)
+    try:await confirm_command(update,context)
+    finally:
+        if QUEUE_KEY not in context.application.bot_data and old:context.application.bot_data[QUEUE_KEY]=old
+        context.user_data.pop('_research_kept_items',None)
 
 
 async def confirm_command(
@@ -1269,7 +1304,7 @@ async def confirm_command(
         "chat_id": update.effective_chat.id,
         "file_name": file_name,
         "duplicate_count": duplicate_count,
-        "items": [],
+        "items": context.user_data.pop('_research_kept_items',[]),
         "preparation_counts": {
             "prepared": 0,
             "duplicate": 0,
@@ -1312,6 +1347,8 @@ async def confirm_command(
             return
 
         total = len(rows)
+        if queue['items']:
+            await update.effective_message.reply_text(f"Сохраняю в очереди ранее готовые сообщения: {len(queue['items'])}. Повторно они не исследуются.")
         parallel_limit = parallel_research_limit()
         semaphore = asyncio.Semaphore(parallel_limit)
 
@@ -1378,13 +1415,19 @@ async def confirm_command(
                 counts[status] += 1
 
                 if prepared_item is not None:
-                    queue["items"].append(prepared_item)
+                    def same_item(v):
+                        previous=v.get('prepared_message_id');current=prepared_item.get('prepared_message_id')
+                        if previous is not None and current is not None:return previous==current
+                        identity=row_identity(prepared_item)
+                        return all(identity) and row_identity(v)==identity
+                    if not any(same_item(v) for v in queue['items']):
+                        queue["items"].append(prepared_item)
 
                 await update.effective_message.reply_text(
                     f"Подготовка {completed}/{total}\n"
                     f"ИНН: {row['inn']}\n"
                     f"Клиент: @{row['username']}\n"
-                    f"Статус: {status}\n"
+                    f"Статус: {({'research_failed':'Нужно повторить исследование','manual_review':'Нужна проверка данных','research_paused':'Приостановлено: сервис недоступен'}.get(status,status) if row.get('product') in {'Право_ООО','Право_ИП'} else status)}\n"
                     f"{details}"
                 )
 
@@ -1400,6 +1443,8 @@ async def confirm_command(
 
         counts = queue["preparation_counts"]
         prepared_count = len(queue["items"])
+        from bot_menu import keyboard
+        completion_keyboard=keyboard('sender')
 
         if prepared_count == 0:
             application.bot_data.pop(QUEUE_KEY, None)
@@ -1413,11 +1458,13 @@ async def confirm_command(
                 f"Дубли: {counts.get('duplicate', 0)}\n"
                 f"Ошибки исследования: "
                 f"{counts.get('research_failed', 0)}\n"
+                f"Приостановлены из-за сервиса: {counts.get('research_paused', 0)}\n"
                 f"Ручная проверка: "
                 f"{counts.get('manual_review', 0)}\n"
                 f"Ошибки сохранения: "
                 f"{counts.get('persistence_failed', 0)}\n\n"
                 "Данные SQLite не удалены."
+                ,reply_markup=completion_keyboard
             )
             return
 
@@ -1430,6 +1477,7 @@ async def confirm_command(
             f"Дубли: {counts.get('duplicate', 0)}\n"
             f"Ошибки исследования: "
             f"{counts.get('research_failed', 0)}\n"
+            f"Приостановлены из-за сервиса: {counts.get('research_paused', 0)}\n"
             f"Ручная проверка: "
             f"{counts.get('manual_review', 0)}\n"
             f"Ошибки сохранения: "
@@ -1438,6 +1486,7 @@ async def confirm_command(
             "Сообщения пока не отправлены.\n\n"
             "Убедитесь, что ограничение Telegram снято. "
             "Затем введите время в формате ЧЧ:ММ."
+            ,reply_markup=completion_keyboard
         )
 
     except asyncio.CancelledError:
@@ -2249,6 +2298,7 @@ def create_bot() -> Application:
     ).build()
 
     application.add_handler(CommandHandler("access", access_status_command))
+    application.add_handler(CommandHandler('retry_research',retry_research_command))
     application.add_handler(CommandHandler('spam_reset', spam_reset_command))
     application.add_handler(
         CommandHandler("start", start_command)

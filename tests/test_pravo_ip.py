@@ -40,6 +40,7 @@ class LegalFixTests(unittest.TestCase):
         response=Mock();response.responses.create.return_value=SimpleNamespace(
             output_text='ГОТОВОЕ СООБЩЕНИЕ\nМеня зовут Павел, ООО ДВК Право.\nКОНЕЦ СООБЩЕНИЯ')
         with patch('ai.get_catalog',return_value=catalog),patch('ai.OpenAI',return_value=response),\
+             patch('legal_research.run',side_effect=lambda row,name,settings,prompt,factory:{'prompt_text':prompt}),\
              patch('config.OPENAI_API_KEY','fixture'),patch('arbitration_api.find_latest_defendant_case',return_value={
                  'status':'CONFIRMED','case':{'case_number':'А00-1/2026'}}):
             for product,inn in [('Право_ИП','123456789012'),('Право_ООО','1234567890')]:

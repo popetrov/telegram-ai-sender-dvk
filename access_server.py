@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import logging
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -19,12 +20,35 @@ from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler
 from telegram.request import HTTPXRequest
 
-from access_lease import issue
+from access_lease import issue,canonical
 from authority_store import AuthorityStore
 from owner_notifications import manager_label
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / "data/access_authority"
+
+
+def register_research_notices(application,store,key,notices):
+    async def receive(update,context):
+        if store is None or notices is None or update.effective_chat.type!='private':return
+        try:
+            if len(context.args)!=1 or len(context.args[0])>1500:return
+            data=json.loads(base64.b64decode(context.args[0],altchars=b'-_',validate=True))
+            if set(data)!={'subject','notice_id','code'}:return
+            subject,notice,code=data['subject'],data['notice_id'],data['code']
+            account=update.effective_user.id
+            if (not isinstance(notice,str) or len(notice)!=64 or any(c not in '0123456789abcdef' for c in notice)
+                    or code not in ('quota','credentials')):return
+            if not any(r['account_id']==account and r['subject']==subject for r in store.list_managers()):return
+            reason=('исчерпан месячный лимит парсера' if code=='quota' else 'парсер отклонил ключ или доступ')
+            notices.once(f'research:{account}:{code}:{int(time.time())//3600}',
+                f'ДВК Право: {manager_label(store,account)} — {reason}. Подготовка приостановлена. '
+                'После восстановления сервиса менеджер может повторить незавершённые исследования; готовые сообщения сохранены.')
+            payload=dict(protocol='DVK_RESEARCH_ACK_V1',subject=subject,notice_id=notice)
+            envelope=dict(payload=payload,signature=base64.b64encode(key.sign(canonical(payload))).decode())
+            await update.effective_message.reply_text('DVK_RESEARCH_ACK '+json.dumps(envelope,separators=(',',':')),disable_notification=True)
+        except (ValueError,TypeError,KeyError):return
+    application.add_handler(CommandHandler('research_status',receive))
 
 
 def save_json(path, data):
@@ -221,6 +245,8 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
             await update.effective_message.reply_text(str(exc))
 
     if role != 'service':
+        from incident_monitor import register_admin
+        register_admin(application,store,admin_id)
         for command in ('company', 'company_off', 'renew', 'companies'):
             application.add_handler(CommandHandler(command, companies))
         application.add_handler(CommandHandler("users", users))
@@ -237,6 +263,7 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
         register_receiver(application, store, key, sync_key, notices=notices)
     if role != 'admin':
         application.add_handler(CommandHandler("lease", lease))
+        register_research_notices(application,store,key,notices)
         from telegram_safety import register_receiver as register_safety
         register_safety(application, store, key, notices)
     async def on_error(update, context):

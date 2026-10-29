@@ -160,6 +160,9 @@ class AuthorityStore:
                              (account_id, event_id)).fetchone()
             if old and old['digest'] != digest:
                 raise ValueError('Conflicting event ID')
+            if payload.get('data',{}).get('table')=='monitor_events':
+                from incident_monitor import validate_bound_event
+                validate_bound_event(payload,account_id,subject)
             db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?,?,?,?)',
                        (account_id, event_id, digest, json.dumps(payload, ensure_ascii=False),
                         int(time.time()), manager['company_id'], subject))
@@ -174,6 +177,9 @@ class AuthorityStore:
             if not manager or manager['subject'] != subject or not manager['company_id']:
                 raise ValueError('Unbound identity')
             for member_id, member in members:
+                if member.get('data',{}).get('table')=='monitor_events':
+                    from incident_monitor import validate_bound_event
+                    validate_bound_event(member,account_id,subject)
                 member_digest = event_digest(member)
                 old = db.execute('SELECT digest FROM events WHERE account_id=? AND event_id=?',
                                  (account_id, member_id)).fetchone()
