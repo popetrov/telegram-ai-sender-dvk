@@ -283,6 +283,10 @@ def run(row,sender,settings,prompt,client_factory):
                     try:response=client.responses.create(model=settings['model'],tools=[],input=actual_prompt,
                         text={'format':{'type':'json_schema','name':'legal_opening','strict':True,'schema':STYLE_SCHEMA}})
                     finally:client.close()
+                    try:
+                        from service_reports_runtime import record_usage
+                        record_usage(Path.cwd(),phase='legal_research',model=settings['model'],result=response,status='received',product=row['product'])
+                    except Exception:pass
                     raw=response.output_text or ''
                     model.append(dict(raw=raw))
                     style=json.loads(raw)

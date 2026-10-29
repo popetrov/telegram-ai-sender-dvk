@@ -3,17 +3,20 @@ import json
 import uuid
 
 DIALOGUE_TABLES = ('dialogue_threads','dialogue_messages','dialogue_actions','dialogue_notices')
-TABLES = ('clients', 'research_runs', 'messages', 'imports', 'prepared_messages', 'uploaded_rows', 'monitor_events') + DIALOGUE_TABLES
+REPORT_TABLES = ('report_reads','report_health','report_usage','report_incoming')
+LEGACY_TABLES = ('clients','research_runs','messages','imports','prepared_messages','uploaded_rows','monitor_events') + DIALOGUE_TABLES
+TABLES = LEGACY_TABLES + REPORT_TABLES
 
 
-def initialize(db):
+def initialize(db, *, reports=False):
     db.execute('CREATE TABLE IF NOT EXISTS sync_outbox (sequence INTEGER PRIMARY KEY AUTOINCREMENT, '
                'event_id TEXT UNIQUE NOT NULL, payload TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS uploaded_rows (id INTEGER PRIMARY KEY, data TEXT NOT NULL)')
     # Stable random identity lives in the same database and survives restarts.
     db.execute("INSERT OR IGNORE INTO local_settings VALUES ('sync_installation_id', ?, datetime('now'))",
                (str(uuid.uuid4()),))
-    for table in TABLES:
+    tables=TABLES if reports else LEGACY_TABLES
+    for table in tables:
         columns = [r[1] for r in db.execute(f'PRAGMA table_info({table})')]
         if not columns:
             continue  # Older manager installations do not have dialogue tables.
@@ -26,12 +29,20 @@ def initialize(db):
                 END''')
     marker = db.execute("SELECT 1 FROM local_settings WHERE key='sync_initial_export'").fetchone()
     if marker is None:
-        for table in TABLES:
+        for table in tables:
             if not db.execute('SELECT 1 FROM sqlite_master WHERE type=\'table\' AND name=?',(table,)).fetchone():
                 continue
             for row in db.execute(f'SELECT * FROM {table}').fetchall():
                 enqueue(db, {'table': table, 'row': dict(row)})
         db.execute("INSERT INTO local_settings VALUES ('sync_initial_export','1',datetime('now'))")
+
+
+def enable_report_export(db):
+    initialize(db,reports=True)
+    if not db.execute("SELECT 1 FROM local_settings WHERE key='report_export_v1'").fetchone():
+        for table in REPORT_TABLES:
+            for row in db.execute('SELECT * FROM '+table).fetchall():enqueue(db,dict(table=table,row=dict(row)))
+        db.execute("INSERT INTO local_settings VALUES ('report_export_v1','1',datetime('now'))")
 
 
 def enqueue(db, payload):

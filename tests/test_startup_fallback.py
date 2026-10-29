@@ -40,13 +40,13 @@ class FallbackTests(unittest.TestCase):
                 with self.assertRaises(ValueError):update.latest_bundle('2.0.20')
 
     def test_working_api_prerelease_is_not_replaced_by_fallback(self):
-        with patch.object(update,'fetch',return_value=json.dumps(dict(prerelease=True)).encode()),patch.object(update.urllib.request,'urlopen') as network:
-            self.assertIsNone(update.latest_bundle('2.0.20'));network.assert_not_called()
+        with patch.object(update,'fetch',return_value=json.dumps(dict(prerelease=True)).encode()),patch.object(update,'stable_release_url',side_effect=urllib.error.URLError('stable unavailable')) as network:
+            self.assertIsNone(update.latest_bundle('2.0.20'));network.assert_called_once()
 
     def test_same_stable_version_does_not_download_a_package(self):
         with patch.object(update,'fetch',side_effect=self.fetch) as fetch,patch.object(update.urllib.request,'urlopen',return_value=Page(self.url)):
             self.assertIsNone(update.latest_bundle('2.0.22'))
-            self.assertEqual(fetch.call_count,1)
+            fetch.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

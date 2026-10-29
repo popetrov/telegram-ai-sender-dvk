@@ -2340,6 +2340,8 @@ def create_bot() -> Application:
         )
     )
 
+    from service_reports_runtime import register as register_reports
+    register_reports(application,root=Path.cwd(),allowed=user_is_allowed)
     from bot_menu import register as register_menu
     register_menu(application,role='sender',allowed=lambda u:u.effective_chat.type=='private' and user_is_allowed(u))
     return application

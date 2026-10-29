@@ -151,6 +151,12 @@ def generate_company_analysis(
         input=prompt_text,
     )
 
+    try:
+        from service_reports_runtime import record_usage
+        record_usage(Path.cwd(),phase='initial_research',model=settings['model'],result=response,status='received',tools=settings['tools'],product=normalized_product)
+    except Exception:
+        pass
+
     raw_result = response.output_text
 
     if not raw_result or not raw_result.strip():

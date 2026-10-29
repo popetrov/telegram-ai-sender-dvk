@@ -5,6 +5,7 @@ from telegram import ReplyKeyboardMarkup,InlineKeyboardButton,InlineKeyboardMark
 from telegram.ext import MessageHandler,CommandHandler,CallbackQueryHandler,ApplicationHandlerStop,filters
 
 SENDER={
+    '📈 Статистика':('report','Статистика своего аккаунта'),
     '📋 Очередь':('queue','Восстановить очередь'),
     '✍️ Подготовить сообщения':('confirm','Подготовить сообщения из Excel'),
     '🔄 Повторить исследования':('retry_research','Повторить только незавершённые исследования'),
@@ -18,6 +19,7 @@ SENDER={
     '🏠 Меню':('menu','Показать кнопки'),
 }
 ADMIN={
+    '📈 Статистика':('statistics','Статистика по менеджерам, компаниям и организациям'),
     '🛡 Контроль переписки':('monitor','Контроль работы программ менеджеров'),
     '👥 Менеджеры':('users','Список менеджеров'),
     '🏢 Компании':('companies','Список компаний'),

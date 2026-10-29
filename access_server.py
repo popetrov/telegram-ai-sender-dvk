@@ -134,7 +134,12 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
                     registry[str(account_id)] = {"subject": subject, "allowed": False}
                     save_json(STATE / "users.json", registry)
                 allowed = authorized_request(registry, account_id, subject)
-            envelope = issue(key, subject=subject, nonce=nonce, allowed=allowed,
+            company_id=None
+            if store is not None:
+                with store.connection() as db:
+                    member=db.execute('SELECT company_id FROM managers WHERE account_id=?',(account_id,)).fetchone()
+                    company_id=member['company_id'] if member else None
+            envelope = issue(key, subject=subject, nonce=nonce, allowed=allowed,company_id=company_id,reporting_schema=1,
                              subscription_end=subscription_end)
             await update.effective_message.reply_text(
                 "DVK_ACCESS " + json.dumps(envelope, separators=(",", ":")), disable_notification=True)
@@ -245,6 +250,8 @@ def create_server(token, admin_id, key, store=None, sync_key=None, *, role='comb
             await update.effective_message.reply_text(str(exc))
 
     if role != 'service':
+        from service_reports_center import register as register_statistics
+        register_statistics(application,store,admin_id)
         from incident_monitor import register_admin
         register_admin(application,store,admin_id)
         for command in ('company', 'company_off', 'renew', 'companies'):

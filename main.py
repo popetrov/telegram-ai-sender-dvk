@@ -175,6 +175,7 @@ async def main():
     dialogue_task = None
     safety_task = None
     monitor_task = None
+    reporting_task = None
 
     try:
         await ensure_telegram_authorized()
@@ -182,6 +183,11 @@ async def main():
         import incident_monitor
         incident_monitor.startup((await client.get_me()).id)
         access_task = await access_runtime.start(client)
+        try:
+            import service_reports_runtime
+            reporting_task = await service_reports_runtime.start(client,Path.cwd())
+        except Exception as exc:
+            print('Сборщик статистики недоступен ('+type(exc).__name__+'). Основная работа продолжается.',flush=True)
         sync_task = await sync_runtime.start(client)
 
         version = Path('version.txt').read_text('utf-8-sig').strip()
@@ -238,6 +244,7 @@ async def main():
             await bot.shutdown()
 
     finally:
+        await access_runtime.stop(reporting_task)
         await access_runtime.stop(monitor_task)
         if 'incident_monitor' in locals():
             try:incident_monitor.record('shutdown')

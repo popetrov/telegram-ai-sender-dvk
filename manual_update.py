@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 
 RUNTIME = {
+    'service_reports.py','service_reports_runtime.py','ai_costs.py',
     'incident_monitor.py','incident_isolation.py',
     'legal_research.py',
     'safe_telegram.py','account_guard.py','telegram_safety.py',

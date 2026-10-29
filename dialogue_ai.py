@@ -34,6 +34,11 @@ class DialogueAI:
             kwargs['text']={'format':{'type':'json_schema','name':'dialogue_decision','strict':True,'schema':schema}}
         try:
             result=await self.client.responses.create(**kwargs)
+            try:
+                from pathlib import Path
+                from service_reports_runtime import record_usage
+                record_usage(Path.cwd(),phase='dialogue',model=self.model,result=result,status='received')
+            except Exception:pass
             if getattr(result,'status',None)!='completed' or not (result.output_text or '').strip():
                 raise KnowledgeUnavailable('Dialogue model did not return a complete answer')
             return result.output_text.strip()

@@ -98,22 +98,37 @@ def fetch(url):
     return data
 
 
-def release_metadata():
-    try:return json.loads(fetch(API))
+def stable_release_url():
+    request=urllib.request.Request(LATEST_PAGE,headers={'User-Agent':'DVK-Startup'})
+    try:
+        with urllib.request.urlopen(request,timeout=15) as response:return response.geturl()
     except (urllib.error.URLError,TimeoutError):
+        curl=shutil.which('curl.exe') or shutil.which('curl')
+        if not curl:raise
+        result=subprocess.run([curl,'--fail','--location','--silent','--show-error',
+            '--proto','=https','--proto-redir','=https','--output',os.devnull,
+            '--write-out','%{url_effective}','--connect-timeout','10','--max-time','20',LATEST_PAGE],
+            capture_output=True,timeout=25,check=False)
+        if result.returncode:raise urllib.error.URLError('Stable release endpoint unavailable')
+        return result.stdout.decode('utf-8').strip()
+
+
+def release_metadata():
+    # Prefer the stable permalink: shared VPN IPs frequently exhaust API quotas.
+    try:
         global _network_stage
         _network_stage='release_latest_redirect'
         # GitHub's stable-latest permalink excludes prereleases. Do not use the
         # Atom feed: a newer pilot there must never become a production update.
-        request=urllib.request.Request(LATEST_PAGE,headers={'User-Agent':'DVK-Startup'})
-        with urllib.request.urlopen(request,timeout=15) as response:
-            final=response.geturl()
+        final=stable_release_url()
         match=re.fullmatch(re.escape(f'https://github.com/{REPOSITORY}/releases/tag/')+r'(v\d+\.\d+\.\d+)',final)
         if not match:raise ValueError('Unexpected stable release redirect')
         tag=match[1]
         names=('dvk-transition-pilot.zip','dvk-transition-pilot.zip.sha256')
         return dict(tag_name=tag,draft=False,prerelease=False,assets=[
             dict(name=name,browser_download_url=f'https://github.com/{REPOSITORY}/releases/download/{tag}/{name}') for name in names])
+    except (urllib.error.URLError,TimeoutError):
+        return json.loads(fetch(API))
 
 
 def latest_bundle(current):

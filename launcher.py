@@ -342,14 +342,12 @@ def get_latest_release_from_atom():
 
 
 def get_latest_release_fallback():
-    """Try two public, non-API release discovery methods in order."""
-    release = get_latest_release_from_redirect()
-    if release is not None:
-        return release
-    return get_latest_release_from_atom()
+    return get_latest_release_from_redirect()
 
 
 def get_latest_release():
+    stable=get_latest_release_from_redirect()
+    if stable is not None:return stable
     try:
         raw = download_bytes(
             RELEASES_API_URL,

@@ -85,9 +85,25 @@ def startup(enable):
         target.unlink()
 
 
+def configure_billing(root=ROOT):
+    from dotenv import set_key
+    from file_lock import FileLock
+    path=Path(root)/'.env.authority'
+    if not path.is_file():raise RuntimeError('Сначала настройте центр.')
+    key=getpass('OpenAI Admin API key (только для списаний, ввод скрыт): ').strip()
+    if not key.startswith('sk-admin-') or any(c.isspace() for c in key):
+        raise ValueError('Нужен Admin API key организации OpenAI. Ключ менеджеров сюда не подходит.')
+    with FileLock(Path(root)/'data/access_authority/center.lock'):
+        before=path.read_bytes()
+        try:set_key(str(path),'OPENAI_ADMIN_KEY',key)
+        except BaseException:path.write_bytes(before);raise
+    if os.name!='nt':path.chmod(0o600)
+    print('Сверка списаний настроена только в центре. Запустите центр. Ключ менеджерам не передаётся.')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'configure', 'run', 'check', 'autostart-on', 'autostart-off', 'backup-config', 'service-config', 'sheets-config', 'knowledge-config'])
+    parser.add_argument('command', choices=['install', 'configure', 'run', 'check', 'autostart-on', 'autostart-off', 'backup-config', 'service-config', 'sheets-config', 'knowledge-config','billing-config'])
     parser.add_argument('--kb-env')
     parser.add_argument('--directory')
     parser.add_argument('--keep-days', type=int, default=30)
@@ -103,6 +119,9 @@ def main():
         configure()
     elif args.command == 'configure':
         configure()
+    elif args.command == 'billing-config':
+        python = ROOT / 'venv-center' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        return subprocess.call([str(python), '-c', 'import center_setup; center_setup.configure_billing()'], cwd=ROOT)
     elif args.command == 'service-config':
         python = ROOT / 'venv-center' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
         return subprocess.call([str(python), '-c', 'import center_setup; center_setup.configure_service()'], cwd=ROOT)
