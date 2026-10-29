@@ -235,6 +235,14 @@ def startup(account_id):
             record('update_failed',error_type=data['error_type'],stage=data['stage'])
         except (ValueError,KeyError,OSError):
             pass
+    launcher=Path(os.environ.get('DVK_LAUNCHER_ROOT',str(ROOT)))
+    for candidate in dict.fromkeys((ROOT/'DVK_START_REPORT.txt',launcher/'DVK_START_REPORT.txt')):
+        if not candidate.is_file() or candidate.is_symlink() or candidate.stat().st_size>64000:continue
+        try:
+            failure=json.loads(candidate.read_text('utf-8'))
+            if failure.get('protocol')=='DVK_START_FAILURE_V1':
+                record('update_failed',error_type=failure['error_type'],stage=failure['stage'],reason_code=failure['reason_code'])
+        except (ValueError,KeyError,OSError):pass
 
 
 async def flush(client):

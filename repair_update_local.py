@@ -55,7 +55,7 @@ def known_bridge(data):
             if isinstance(node,ast.Assign) and len(node.targets)==1 and isinstance(node.targets[0],ast.Name):
                 if node.targets[0].id=='PAYLOAD':node.value=ast.Constant(b'placeholder')
                 if node.targets[0].id=='SHA256':node.value=ast.Constant('placeholder')
-        return hashlib.sha256(ast.dump(tree,include_attributes=False).encode()).hexdigest()==BRIDGE_AST
+        return hashlib.sha256(ast.dump(tree,include_attributes=False).encode()).hexdigest() in {BRIDGE_AST,'f7cc3559b3ad1614f2af0f080902c1da83bec93ebb13d6611bced3b529cf4af8'}
     except (ValueError,SyntaxError,UnicodeError):return False
 
 

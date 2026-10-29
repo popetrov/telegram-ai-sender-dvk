@@ -53,6 +53,14 @@ class StartupUpdateTests(unittest.TestCase):
     def discover(self, current):
         return 'v2.0.20',self.raw
 
+    def test_transition_failure_report_identifies_file_without_secret_exception_text(self):
+        error=ValueError('В старой программе изменён requirements.txt. SECRET_TOKEN')
+        report=update.report_transition_failure(self.root,error)
+        self.assertEqual(report['filename'],'requirements.txt')
+        self.assertEqual(report['reason_code'],'legacy_runtime_changed')
+        self.assertNotIn('SECRET_TOKEN',(self.root/'DVK_START_REPORT.txt').read_text('utf-8'))
+        self.assertFalse(report.get('sender_started',False))
+
     def test_failed_install_keeps_source_and_launches_previous_version(self):
         before = (self.root/'data/local.sqlite').read_bytes()
         def fail(*args):

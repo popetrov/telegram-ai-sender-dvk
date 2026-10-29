@@ -82,6 +82,11 @@ def inspect_source(source, baselines):
     profile = max(profiles,key=lambda p:sum(
         normalized((source/name).read_bytes()) == normalized(p['files'].get(name,'').encode('utf-8')) for name in CORE))
     def baseline(root,name):
+        if name in ('config.py','telegram_client.py','requirements.txt'):
+            # A recognised inherited file is the local base, not a custom change.
+            local=(source/name).read_bytes()
+            if any(name in p['files'] and same_legacy_runtime(name,local,p['files'][name].encode('utf-8')) for p in profiles):
+                return local
         if name=='bot.py':
             local=(source/name).read_bytes()
             if any(same_legacy_runtime(name,local,p['files'].get(name,'').encode('utf-8')) for p in profiles):

@@ -26,6 +26,36 @@ API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 LATEST_PAGE = f'https://github.com/{REPOSITORY}/releases/latest'
 MAX_BYTES = 64 * 1024 * 1024
 _network_stage = 'release_metadata'
+_transition_stage = 'bootstrap'
+_transition_source = None
+
+
+def report_transition_failure(root,exc):
+    """Safe startup report even before the account or telemetry client can start."""
+    import time
+    import traceback
+    from transition_setup import CORE
+    reason='transition_failed'
+    filename=None
+    message=str(exc) if isinstance(exc,ValueError) else ''
+    if message.startswith('В старой программе изменён '):
+        reason='legacy_runtime_changed'
+        filename=next((name for name in CORE if message.startswith('В старой программе изменён '+name+'.')),None)
+    elif 'резервная копия' in message:reason='backup_missing_or_incomplete'
+    elif 'активн' in message:reason='active_installation_unavailable'
+    elif 'конфликт' in message.lower():reason='customization_conflict'
+    elif isinstance(exc,subprocess.CalledProcessError):reason='child_process_failed'
+    report=dict(protocol='DVK_START_FAILURE_V1',recorded_at=int(time.time()),stage=_transition_stage,
+                error_type=type(exc).__name__,reason_code=reason,filename=filename,
+                call_stack=[dict(file=Path(frame.filename).name,line=frame.lineno,function=frame.name)
+                            for frame in traceback.extract_tb(exc.__traceback__,limit=16)],core_hashes={})
+    if _transition_source is not None:
+        for name in CORE:
+            path=Path(_transition_source)/name
+            if path.is_file() and not path.is_symlink():report['core_hashes'][name]=hashlib.sha256(path.read_bytes()).hexdigest()
+    path=Path(root)/'DVK_START_REPORT.txt'
+    path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    return report
 
 
 def update_failure_report(root, active, exc):
@@ -210,6 +240,8 @@ def recover_legacy(root, bundle):
     snapshot current local data, then restore only the backed-up code/products.
     """
     import manual_update
+    global _transition_stage,_transition_source
+    _transition_stage='legacy_backup_select'
     from transition_setup import CORE, inspect_source, verify_bundle
     _, _, baselines = verify_bundle(bundle)
     backups = sorted((root / 'data/backups').glob('*/manifest.json'), reverse=True)
@@ -221,6 +253,7 @@ def recover_legacy(root, bundle):
         raise ValueError('Неполная резервная копия старой версии')
     source = root.with_name(root.name + '_dvk_' + uuid.uuid4().hex)
     source.mkdir()
+    _transition_source=source
     for name in set(CORE) | {'version.txt', 'products.json'}:
         origin = backup / name if name in LEGACY_FILES else root / name
         if origin.is_symlink() or not origin.is_file():
@@ -238,7 +271,9 @@ def recover_legacy(root, bundle):
             target = source / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(backup / name, target)
+    _transition_stage='legacy_source_verify'
     inspect_source(source, baselines)
+    _transition_stage='legacy_data_snapshot'
     manual_update.snapshot_local(root, source)
     activate(root, source)  # Durable fallback before installing anything new.
     return source
@@ -247,6 +282,9 @@ def recover_legacy(root, bundle):
 def run(root, *, updates=True, discover=latest_bundle, prepare=prepare_update, launch=None,
         initial_bundle=None):
     root = Path(root).resolve()
+    global _transition_stage
+    _transition_stage='active_installation_check'
+    os.environ['DVK_LAUNCHER_ROOT']=str(root)
     from start import prepare_environment
     if launch is None:
         def launch(active):
@@ -285,6 +323,7 @@ def run(root, *, updates=True, discover=latest_bundle, prepare=prepare_update, l
                             bundle = Path(temporary)
                             unpack_bundle(raw, bundle)
                             print('Устанавливаю обновление. Сохраняю прежнюю версию и данные…', flush=True)
+                            _transition_stage='candidate_prepare'
                             prepare(active, candidate, bundle, tag)
                         activate(root, candidate)
                         active = candidate

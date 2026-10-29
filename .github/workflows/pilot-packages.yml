@@ -43,6 +43,11 @@ jobs:
           python transition-smoke/transition_setup.py --source legacy-smoke --destination candidate-smoke --sender-stopped
           python tests/transition_fixture.py --bundle transition-smoke --destination bridge-legacy-smoke
           python tests/bridge_smoke.py --source bridge-legacy-smoke --packages dist
+          # The old updater did not replace requirements/config/client: exercise
+          # an actual 2.0.10 -> 2.0.19 inherited installation, not only fresh 19.
+          python tests/transition_fixture.py --bundle transition-smoke --destination inherited-legacy-smoke
+          git show v2.0.10:requirements.txt > inherited-legacy-smoke/requirements.txt
+          python tests/bridge_smoke.py --source inherited-legacy-smoke --packages dist
       - name: Smoke-test unpacked center with only center dependencies
         shell: bash
         run: |

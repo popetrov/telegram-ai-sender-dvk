@@ -58,6 +58,25 @@ def legacy_profiles(root):
                                  capture_output=True,check=True).stdout.decode('utf-8').splitlines()
         names.update(name for name in prompts if name.endswith('.md'))
         profiles.append(dict(name=label,version=read('version.txt').strip(),files={name:read(name) for name in sorted(names)}))
+    # The legacy updater deliberately never distributed these files. A manager
+    # installed at 2.0.10 and updated to 2.0.19 still legitimately has 2.0.10's
+    # requirements/config/client. Admit only exact published historical bytes.
+    windows=profiles[0]
+    inherited=('config.py','telegram_client.py','requirements.txt')
+    seen={tuple(windows['files'][name] for name in inherited)}
+    for patch in range(10,19):
+        ref='v2.0.'+str(patch)
+        old={}
+        for name in inherited:
+            result=subprocess.run(['git','show',ref+':'+name],cwd=root,capture_output=True)
+            if result.returncode:break
+            old[name]=result.stdout.decode('utf-8-sig')
+        if len(old)!=len(inherited):continue
+        signature=tuple(old[name] for name in inherited)
+        if signature in seen:continue
+        seen.add(signature)
+        profiles.append(dict(name='windows-2.0.19-inherited-'+ref,version=windows['version'],
+                             files={**windows['files'],**old}))
     return dict(format=1,profiles=profiles)
 
 

@@ -52,6 +52,14 @@ if __name__ == '__main__':
         raise SystemExit(main())
     except Exception as exc:
         print('Переход остановлен. Данные сохранены. Нужна проверка владельца: '+type(exc).__name__)
+        try:
+            import startup_update
+            report=startup_update.report_transition_failure(pathlib.Path(__file__).resolve().parent,exc)
+            print('Этап: '+report['stage']+'. Причина: '+report['reason_code']+
+                  ('. Файл: '+report['filename'] if report.get('filename') else ''))
+            print('Передайте владельцу DVK_START_REPORT.txt из этой папки.')
+        except Exception:
+            pass
         raise SystemExit(1)
 ''' % (base64.b85encode(raw), hashlib.sha256(raw).hexdigest())
     payload = {}

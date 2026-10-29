@@ -77,6 +77,27 @@ class TransitionTests(unittest.TestCase):
             for table in ('clients','messages','prepared_messages'):
                 self.assertEqual(old.execute('SELECT * FROM '+table).fetchall(),new.execute('SELECT * FROM '+table).fetchall())
 
+    def test_inherited_210_requirements_migrate_without_touching_original_data(self):
+        old=subprocess.run(['git','show','v2.0.10:requirements.txt'],cwd=ROOT,capture_output=True,check=True).stdout
+        self.assertNotIn(b'qrcode',old)
+        (self.source/'requirements.txt').write_bytes(old)
+        before=self.hashes()
+        report=prepare_transition(self.source,self.destination,self.bundle)
+        self.assertEqual(report['conflicts'],[])
+        self.assertEqual(before,self.hashes())
+        self.assertEqual((self.destination/'requirements.txt').read_bytes(),(ROOT/'requirements.txt').read_bytes())
+        self.assertEqual((self.destination/'.env').read_bytes(),(self.source/'.env').read_bytes())
+        with closing(sqlite3.connect(self.source/'data/local.sqlite')) as old_db, closing(sqlite3.connect(self.destination/'data/local.sqlite')) as new_db:
+            for table in ('clients','messages','prepared_messages'):
+                self.assertEqual(old_db.execute('SELECT * FROM '+table).fetchall(),new_db.execute('SELECT * FROM '+table).fetchall())
+
+    def test_unreviewed_requirement_change_is_still_rejected(self):
+        with (self.source/'requirements.txt').open('a',encoding='utf-8') as stream:stream.write('\nunknown-package==1.0\n')
+        before=self.hashes()
+        with self.assertRaisesRegex(ValueError,'requirements.txt'):prepare_transition(self.source,self.destination,self.bundle)
+        self.assertEqual(before,self.hashes())
+        self.assertFalse(self.destination.exists())
+
     def test_custom_products_prompts_and_paused_draft_are_preserved(self):
         products_path = self.source/'products.json'
         products = json.loads(products_path.read_text('utf-8'))
