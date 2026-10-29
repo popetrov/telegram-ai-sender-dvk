@@ -347,6 +347,37 @@ class ErrorRecorder(logging.Handler):
             pass
 
 
+async def capture_ttl(client, peer_id=None, notify=None, recorder=None):
+    """Read current configuration, never change it or infer historic settings."""
+    recorder=recorder or _default
+    from telethon.tl import functions
+    if peer_id is None:
+        result=await client(functions.messages.GetDefaultHistoryTTLRequest())
+        period=getattr(result,'period',None);source='account_default_ttl';fields={}
+    else:
+        entity=await client.get_input_entity(peer_id)
+        result=await client(functions.users.GetFullUserRequest(entity))
+        period=getattr(result.full_user,'ttl_period',None)
+        # An absent optional userFull ttl_period means the current timer is off.
+        period=0 if period is None else period
+        source='chat_history_ttl';fields={'peer_id':peer_id}
+    if type(period) is not int or period<0:raise ValueError('Invalid TTL response')
+    recorder.record('monitor_warning',reason_code='ttl_snapshot',source=source,count=period,**fields)
+    if period and notify:
+        key='ttl_notice:'+source+':'+str(peer_id)+':'+str(period)
+        with closing(recorder.connect()) as db:
+            sent=db.execute('SELECT 1 FROM monitor_settings WHERE key=?',(key,)).fetchone()
+        if not sent:
+            where='аккаунта (для новых чатов)' if peer_id is None else 'чата '+str(peer_id)
+            await notify('В Telegram включено автоудаление '+where+': '+str(period)+
+                         ' сек. Telegram может удалять сообщения по таймеру. '
+                         'Отключите таймер в настройках Telegram, если хотите сохранять переписку. '
+                         'Это текущее значение, оно не доказывает причину старых удалений.')
+            with closing(recorder.connect()) as db,db:
+                db.execute('INSERT OR REPLACE INTO monitor_settings VALUES (?,?)',(key,str(int(time.time()))))
+    return period
+
+
 async def run(client, notify):
     from telethon import events
     from telegram_safety import default_journal
@@ -363,7 +394,18 @@ async def run(client, notify):
     async def localize_missing(ids,source):
         from incident_isolation import isolate
         import config
-        try:return isolate(_default,ids,ROOT/config.DATABASE_PATH,source)
+        try:
+            scope=isolate(_default,ids,ROOT/config.DATABASE_PATH,source)
+            with closing(_default.connect()) as db:
+                peers=[r[0] for r in db.execute('SELECT DISTINCT peer_id FROM monitor_messages WHERE message_id IN ('+
+                      ','.join('?' for _ in ids)+')',ids)] if ids else []
+            for peer in peers[:5]:
+                if peer and peer>0:
+                    try:
+                        async with asyncio.timeout(15):await capture_ttl(client,peer,notify)
+                    except Exception as exc:
+                        record('monitor_warning',error_type=type(exc).__name__,stage='incident_ttl_read',peer_id=peer)
+            return scope
         except Exception:
             await stop_observed('observed_monitor_unavailable')
             raise
@@ -393,6 +435,17 @@ async def run(client, notify):
             return
         record('outgoing_seen' if msg.out else 'incoming_seen',message_ids=[msg.id],peer_id=event.chat_id,source='telegram_update')
         _default.observe([msg.id],event.chat_id)
+        # Message-level timer and explicit service changes survive disappearance.
+        period=getattr(msg,'ttl_period',None)
+        action=getattr(msg,'action',None)
+        if type(period) is int and period>0:
+            record('monitor_warning',reason_code='message_ttl',source='telegram_update',
+                   peer_id=event.chat_id,message_ids=[msg.id],count=period)
+        if type(action).__name__=='MessageActionSetMessagesTTL':
+            period=getattr(action,'period',None)
+            if type(period) is int and period>=0:
+                record('monitor_warning',reason_code='ttl_changed',source='telegram_service',
+                       peer_id=event.chat_id,message_ids=[msg.id],count=period)
 
     client.add_event_handler(deleted,events.MessageDeleted())
     client.add_event_handler(message,events.NewMessage())
@@ -413,6 +466,7 @@ async def run(client, notify):
     check_at=0
     sessions_at=0
     connected=None
+    ttl_at=0
     try:
         while True:
             now=time.monotonic()
@@ -423,6 +477,24 @@ async def run(client, notify):
             if now>=heartbeat_at:
                 record('heartbeat',connected=current)
                 heartbeat_at=now+300
+            if now>=ttl_at and current:
+                ttl_at=now+900
+                try:
+                    async with asyncio.timeout(15):await capture_ttl(client,notify=notify)
+                except Exception as exc:
+                    record('monitor_warning',error_type=type(exc).__name__,stage='default_ttl_read')
+                # Bounded round-robin: do not scan whole personal history or hammer Telegram.
+                with closing(_default.connect()) as db:
+                    peers=[r[0] for r in db.execute("SELECT DISTINCT peer_id FROM monitor_messages WHERE peer_id>0 "
+                         "ORDER BY COALESCE((SELECT CAST(value AS INTEGER) FROM monitor_settings WHERE key='ttl_checked:'||peer_id),0) LIMIT 5")]
+                for peer in peers:
+                    try:
+                        async with asyncio.timeout(15):await capture_ttl(client,peer,notify)
+                    except Exception as exc:
+                        record('monitor_warning',error_type=type(exc).__name__,stage='chat_ttl_read',peer_id=peer)
+                    with closing(_default.connect()) as db,db:
+                        db.execute('INSERT OR REPLACE INTO monitor_settings VALUES (?,?)',
+                                   ('ttl_checked:'+str(peer),str(int(time.time()))))
             if now>=sessions_at and current:
                 sessions_at=now+900
                 try:
@@ -441,7 +513,7 @@ async def run(client, notify):
                         ids=[r[0] for r in db.execute('SELECT message_id FROM monitor_messages WHERE misses<2 ORDER BY checked_at,message_id LIMIT 50')]
                     if ids:
                         found=await client.get_messages(None,ids=ids)
-                        present={m.id for m in found if m and getattr(m,'message',None) is not None}
+                        present={m.id for m in found if m and type(m).__name__!='MessageEmpty'}
                         missing=_default.apply_check(ids,present)
                         if missing:
                             scope=await localize_missing(missing,'history_missing')
@@ -470,6 +542,16 @@ def center_notice(store, notices, account_id, event_id, data):
         for member_id,member in batch_members(data):center_notice(store,notices,account_id,member_id,member)
         return
     row=data.get('data',{}).get('row',{})
+    if (data.get('data',{}).get('table')=='monitor_events' and row.get('kind')=='monitor_warning'
+            and row.get('reason_code') in ('ttl_snapshot','ttl_changed','message_ttl') and row.get('count',0)>0):
+        from owner_notifications import manager_label
+        peer=row.get('peer_id')
+        key='monitor-ttl:'+str(account_id)+':'+str(peer)+':'+str(row['count'])+':'+str(int(time.time())//86400)
+        notices.once(key,'Автоудаление Telegram: '+manager_label(store,account_id)+
+                     '. '+('Чат '+str(peer) if peer else 'Настройка новых чатов аккаунта')+
+                     ', таймер '+str(row['count'])+' сек. Для сохранения переписки отключите таймер в Telegram. '
+                     'Текущее значение не доказывает причину прошлых исчезновений. Код: '+event_id)
+        return
     if data.get('data',{}).get('table')=='monitor_events' and row.get('kind')=='runtime_error':
         if row.get('stage')=='monitor_task_failed':return  # durable safety notification covers this stop
         if row.get('level',0)<logging.ERROR and row.get('source')!='asyncio':return

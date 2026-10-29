@@ -28,6 +28,34 @@ def requests_in(request, seen=None):
             yield from requests_in(nested, seen)
 
 
+def ephemeral_media(request):
+    """Inspect only TL media containers, never serialize texts or credentials."""
+    seen=set()
+    def visit(item):
+        if item is None or id(item) in seen:return False
+        seen.add(id(item))
+        if utils.is_list_like(item):return any(visit(x) for x in item)
+        if any(type(getattr(item,k,None)) is int and getattr(item,k)>0
+               for k in ('ttl_seconds','ttl_period')):return True
+        return any(visit(getattr(item,k,None)) for k in ('query','media','multi_media','extended_media'))
+    return visit(request)
+
+
+def safe_targets(request):
+    """IDs only. Request repr/to_dict can expose customer text and auth keys."""
+    fields={}; mids=[]
+    for item in requests_in(request):
+        peer=getattr(getattr(item,'peer',None),'user_id',None)
+        if type(peer) is int and peer>0:fields['peer_id']=peer
+        ids=getattr(item,'id',None)
+        if utils.is_list_like(ids):
+            for mid in ids:
+                mid=getattr(mid,'id',mid)
+                if type(mid) is int and mid>0:mids.append(mid)
+    if mids:fields['message_ids']=list(dict.fromkeys(mids))[:2000]
+    return fields
+
+
 def forbidden_operation(request):
     for item in requests_in(request):
         name = type(item).__name__
@@ -38,7 +66,7 @@ def forbidden_operation(request):
 
 
 def require_non_destructive(request):
-    if forbidden_operation(request):
+    if forbidden_operation(request) or ephemeral_media(request):
         raise TelegramDeletionBlocked('Удаление сообщений, истории и изменение папок программой запрещено.')
 
 
@@ -66,8 +94,8 @@ class ProtectedTelegramClient(TelegramClient):
     async def _borrow_exported_sender(self, dc_id):
         return self._guard_sender(await super()._borrow_exported_sender(dc_id))
 
-    def _deny(self, operation):
-        # Block even if disk persistence fails. Never log message IDs/text/peers.
+    def _deny(self, operation, request=None):
+        # Block even if disk persistence fails. Only safe target IDs, never text/keys.
         self._safety_failed = True
         try:
             from incident_monitor import record
@@ -75,7 +103,8 @@ class ProtectedTelegramClient(TelegramClient):
             from pathlib import Path
             stack=[dict(file=Path(f.filename).name,line=f.lineno,function=f.name)
                    for f in traceback.extract_stack(limit=16)]
-            record('request_blocked', operation=operation, call_stack=stack)
+            record('request_blocked', operation=operation, call_stack=stack,
+                   **(safe_targets(request) if request is not None else {}))
         except Exception:
             pass
         try:
@@ -89,7 +118,9 @@ class ProtectedTelegramClient(TelegramClient):
     def _check_request(self, request):
         operation = forbidden_operation(request)
         if operation:
-            self._deny(operation)
+            self._deny(operation,request)
+        if ephemeral_media(request):
+            self._deny('ephemeral_media_ttl',request)
         for item in requests_in(request):
             name = type(item).__name__
             if name.startswith(('Send', 'Forward', 'Edit')) or name == 'StartBotRequest':
