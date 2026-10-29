@@ -2,6 +2,8 @@ import asyncio,contextlib,importlib.util,json,sqlite3,sys,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace as N
 from unittest.mock import AsyncMock,Mock,patch
+import os
+for key,value in dict(TELEGRAM_API_ID='12345',TELEGRAM_API_HASH='test',OPENAI_API_KEY='test',BOT_TOKEN='123:test',MANAGER_ID='test',SESSION_NAME='').items():os.environ.setdefault(key,value)
 H=Path(__file__).resolve().parents[1];sys.path.insert(0,str(H));import incident_monitor as m
 from incident_isolation import isolate,require_peer_allowed,notify_pending,PeerQuarantined
 from dialogue_store import DialogueStore,require_contact_allowed,ContactOptOutError
@@ -94,6 +96,35 @@ class Isolation(unittest.IsolatedAsyncioTestCase):
   reconcile_history(self.r,self.db)
   with self.assertRaises(PeerQuarantined):require_peer_allowed(77,self.r)
   require_peer_allowed(88,self.r)
+ async def test_late_first_contact_isolation_is_uncertain_and_never_auto_replayed(self):
+  import bot
+  from contextlib import ExitStack
+  item=dict(prepared_status='prepared',inn='1',full_name='Test',username='test',product='test',final_message='saved',prompt_file='test.md',prompt_text='saved',model='test',raw_result='saved',prepared_message_id=1)
+  def prepared(item,status,error=None):item['prepared_status']=status;item['send_error']=error
+  with ExitStack() as stack:
+   for name in ['access_runtime.require_access','bot.require_send_cooldown_finished','bot.require_contact_allowed','bot.update_client_status']:stack.enter_context(patch(name))
+   stack.enter_context(patch('bot.get_existing_client_keys',return_value=(set(),set())))
+   stack.enter_context(patch('bot.save_processed_client',return_value=(1,2,3)))
+   stack.enter_context(patch('bot.update_prepared_status',side_effect=prepared))
+   state=stack.enter_context(patch('bot.update_message_status'))
+   stack.enter_context(patch.object(bot.telegram_client,'get_entity',new=AsyncMock(return_value=N(id=77))))
+   send=stack.enter_context(patch.object(bot.telegram_client,'send_message',new=AsyncMock(side_effect=PeerQuarantined('late stop'))))
+   status,_=await bot.send_one_prepared_message(item)
+   self.assertEqual(status,'uncertain');self.assertEqual(state.call_args.kwargs['status'],'uncertain')
+   await bot.send_one_prepared_message(item);send.assert_awaited_once()
+ async def test_late_global_stop_never_claims_known_not_sent(self):
+  import bot
+  from contextlib import ExitStack
+  item=dict(prepared_status='prepared',inn='1',full_name='Test',username='test',product='test',final_message='saved',prompt_file='test.md',prompt_text='saved',model='test',raw_result='saved',prepared_message_id=1)
+  with ExitStack() as stack:
+   for name in ['access_runtime.require_access','bot.require_send_cooldown_finished','bot.require_contact_allowed','bot.update_client_status','bot.update_prepared_status']:stack.enter_context(patch(name))
+   stack.enter_context(patch('bot.get_existing_client_keys',return_value=(set(),set())))
+   stack.enter_context(patch('bot.save_processed_client',return_value=(1,2,3)))
+   state=stack.enter_context(patch('bot.update_message_status'))
+   stack.enter_context(patch.object(bot.telegram_client,'get_entity',new=AsyncMock(return_value=N(id=77))))
+   stack.enter_context(patch.object(bot.telegram_client,'send_message',new=AsyncMock(side_effect=SafetyStop('late stop'))))
+   with self.assertRaises(SafetyStop):await bot.send_one_prepared_message(item)
+   self.assertEqual(state.call_args.kwargs['status'],'uncertain')
  async def test_center_merges_delete_and_confirmation(self):
   store=AuthorityStore(self.root/'authority.sqlite');store.register(42,'manager_1:42');store.assign(42,'dvk');notices=OwnerNotifications(store)
   for kind,eid in [('telegram_deleted','a'*32),('history_missing','b'*32)]:

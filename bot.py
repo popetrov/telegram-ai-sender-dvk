@@ -1723,16 +1723,10 @@ async def _send_one_prepared_message(
             final_message,
         )
     except Exception as exc:
-        from incident_isolation import PeerQuarantined
-        if isinstance(exc,PeerQuarantined):
-            update_message_status(message_id=message_id,status='not_sent',send_error=str(exc))
-            update_client_status(client_id,'manual_review')
-            update_prepared_status(item,'manual_review',str(exc))
-            return 'send_failed',str(exc)
         from telegram_safety import SafetyStop
         if isinstance(exc, SafetyStop):
-            # The protection refused dispatch: this message was never sent.
-            update_message_status(message_id=message_id, status='not_sent', send_error=str(exc))
+            # A protection stop during an SDK retry cannot prove an earlier dispatch failed.
+            update_message_status(message_id=message_id, status='uncertain', send_error=str(exc))
             update_client_status(client_id, 'manual_review')
             update_prepared_status(item, 'manual_review', str(exc))
             raise

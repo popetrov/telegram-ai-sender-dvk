@@ -303,10 +303,6 @@ class DialogueRuntime:
             try:
                 sent=await self.client.send_message(self.peer,action['text'],parse_mode=None)
             except Exception as exc:
-                from incident_isolation import PeerQuarantined
-                if isinstance(exc,PeerQuarantined):
-                    self.store.finish_action(action['id'],status='not_sent')
-                    return
                 self.store.finish_action(action['id'],status='uncertain')
                 thread,_=self.store.snapshot(self.thread_id)
                 self.store.handoff(self.thread_id,event_key='delivery:'+action['id'],event_type='delivery',

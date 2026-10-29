@@ -67,6 +67,15 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['status'],'sent');self.assertEqual(result['telegram_id'],20)
         self.assertEqual(self.store.snapshot(self.thread)[0]['state'],'waiting')
 
+    async def test_late_peer_isolation_never_claims_not_sent_or_retries(self):
+        from incident_isolation import PeerQuarantined
+        self.action();row=self.store.action_for_key(self.thread,'reply:11')
+        self.runtime.client.send_message.side_effect=PeerQuarantined('late stop')
+        with patch('access_runtime.require_access'),patch('bot.require_send_cooldown_finished'):
+            await self.runtime.send(row);await self.runtime.send(row)
+        self.runtime.client.send_message.assert_awaited_once()
+        self.assertEqual(self.store.action_for_key(self.thread,'reply:11')['status'],'uncertain')
+
     async def test_timeout_marks_uncertain_pauses_and_never_retries(self):
         self.action();row=self.store.action_for_key(self.thread,'reply:11')
         self.runtime.client.send_message.side_effect=TimeoutError()
