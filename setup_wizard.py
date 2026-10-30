@@ -2,7 +2,7 @@
 import argparse,json,os,re,subprocess,sys,tempfile
 from pathlib import Path
 
-ROOT=Path(__file__).resolve().parent
+ROOT=__import__('installation_paths').state_root()
 FIELDS=(('number','Номер менеджера от руководителя, например 010',False),
         ('BOT_TOKEN','Токен вашего бота из @BotFather',True),
         ('OPENAI_API_KEY','Ключ ИИ — получите у руководителя',True),
@@ -81,12 +81,20 @@ def wizard(root=ROOT,*,demo=False,open_browser=True,ready=None):
             self.respond(setup_html(token,demo=demo))
         def do_POST(self):
             expected='http://127.0.0.1:'+str(self.server.server_port)
-            if self.path!=route or self.headers.get('Origin')!=expected:
-                self.respond(b'Request rejected',403);return
+            # Drain only a bounded body before rejection. Closing a Windows
+            # socket with unread bytes can reset it before the browser sees403.
             try:
                 length=int(self.headers.get('Content-Length','0'))
                 if not 0<length<16384:raise ValueError('invalid')
-                fields=parse_qs(self.rfile.read(length).decode('utf-8'),keep_blank_values=True)
+                self.connection.settimeout(3)
+                body=self.rfile.read(length)
+                if len(body)!=length:raise ValueError('incomplete')
+            except (ValueError,OSError):
+                self.respond(b'Invalid request',400);return
+            if self.path!=route or self.headers.get('Origin')!=expected:
+                self.respond(b'Request rejected',403);return
+            try:
+                fields=parse_qs(body.decode('utf-8'),keep_blank_values=True)
                 if not hmac.compare_digest(fields.pop('csrf',[''])[0],token):raise ValueError('invalid')
                 values={key:fields.get(key,[''])[0] for key,_,_ in FIELDS}
                 if not demo:save(root,values)

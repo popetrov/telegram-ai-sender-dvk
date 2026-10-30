@@ -40,7 +40,7 @@ def main():
         from startup_update import run
         if sys.argv[1:] == ['--self-check']:
             def probe(active):
-                if not (active/'data/installed-baseline.json').is_file():
+                if not ((active/'data/installed-baseline.json').is_file() or ((root/'.dvk/layout.json').is_file() and (root/'data/installed-baseline.json').is_file())):
                     return 1
                 return subprocess.run([sys.executable,str(active/'main.py'),'--self-check'],cwd=active).returncode
             return run(root, initial_bundle=raw, launch=probe)

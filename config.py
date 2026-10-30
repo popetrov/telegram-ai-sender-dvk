@@ -3,7 +3,8 @@ import os
 from dotenv import load_dotenv
 
 
-load_dotenv()
+from installation_paths import state_root
+load_dotenv(state_root()/".env",override=True)
 
 MANAGER_ID = os.getenv("MANAGER_ID", "").strip()
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID", "").strip()

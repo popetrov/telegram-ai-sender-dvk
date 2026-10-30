@@ -301,7 +301,9 @@ class DialogueRuntime:
             if not current or current['status']!='pending' or not allowed:return
             self.store.claim_action(action['id'])
             try:
-                sent=await self.client.send_message(self.peer,action['text'],parse_mode=None)
+                from forensic_trace import origin
+                with origin('auto_reply','dialogue_actions'):
+                    sent=await self.client.send_message(self.peer,action['text'],parse_mode=None)
             except Exception as exc:
                 self.store.finish_action(action['id'],status='uncertain')
                 thread,_=self.store.snapshot(self.thread_id)

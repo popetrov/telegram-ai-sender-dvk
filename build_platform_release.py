@@ -11,6 +11,9 @@ from transition_setup import CORE, BUNDLE_FILES
 
 ROOT = Path(__file__).resolve().parent
 CENTER_FILES = {
+    'primary_identity.py','forensic_transport.py',
+    'monitor_capabilities.py',
+    'installation_paths.py','forensic_trace.py','forensic_cases.py',
     'service_reports.py','service_reports_center.py','ai_costs.py',
     'incident_monitor.py','incident_isolation.py',
     'safe_telegram.py','telegram_safety.py',

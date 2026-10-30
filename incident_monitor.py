@@ -13,12 +13,14 @@ import sqlite3
 import time
 import uuid
 
-ROOT = Path(__file__).resolve().parent
+from installation_paths import state_root,code_root
+ROOT = state_root()
+CODE_ROOT = code_root()
 KINDS = {'startup', 'shutdown', 'heartbeat', 'send_attempt', 'send_result',
          'send_error', 'telegram_deleted', 'history_missing', 'baseline_missing',
          'request_blocked', 'update_failed', 'outgoing_seen', 'incoming_seen'}
-KINDS.update({'runtime_error','connection','session_snapshot','monitor_warning'})
-FIELDS={'operation','error_type','message_ids','peer_id','account_id','manager_id','version','files',
+KINDS.update({'forensic_operation','installation_snapshot','incident_context','runtime_error','connection','session_snapshot','monitor_warning'})
+FIELDS={'evidence','previous_hash','event_hash','operation','error_type','message_ids','peer_id','account_id','manager_id','version','files',
         'folder_id','pid','request_id','source','count','stage','reason_code','installation_id',
         'call_stack','local_sequence','machine_id','logger','level','sessions','connected','tls_ca_sha256'}
 
@@ -74,6 +76,9 @@ def validate_event(row):
                     or type(session['current']) is not bool
                     or any(type(session[f]) is not int for f in ('created_at','last_active'))):
                 raise ValueError('Invalid session metadata')
+    from forensic_trace import validate,validate_chain
+    if 'evidence' in row:validate(row['evidence'])
+    validate_chain(row)
     return row
 
 
@@ -96,7 +101,10 @@ class Recorder:
                 message_id INTEGER PRIMARY KEY, peer_id INTEGER, seen INTEGER NOT NULL,
                 misses INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS monitor_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                CREATE INDEX IF NOT EXISTS monitor_pending ON monitor_events(acknowledged,sequence);''')
+                CREATE INDEX IF NOT EXISTS monitor_pending ON monitor_events(acknowledged,sequence);
+                CREATE TABLE IF NOT EXISTS monitor_cases(message_id INTEGER PRIMARY KEY,opened_at INTEGER NOT NULL,source TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS monitor_windows(window_id TEXT PRIMARY KEY,opened_at INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS monitor_checkpoints(digest TEXT PRIMARY KEY,received_at INTEGER NOT NULL,receipt TEXT NOT NULL);''')
             from incident_isolation import initialize as initialize_isolation
             initialize_isolation(db)
         except BaseException:
@@ -122,9 +130,41 @@ class Recorder:
         validate_event(data)
         with closing(self.connect()) as db, db:
             event_id = uuid.uuid4().hex
-            db.execute('INSERT INTO monitor_events(event_id,data) VALUES (?,?)',
-                       (event_id, json.dumps(data, separators=(',', ':'))))
+            db.execute('BEGIN IMMEDIATE')
+            last=db.execute('SELECT sequence,data FROM monitor_events ORDER BY sequence DESC LIMIT 1').fetchone()
+            data['local_sequence']=(last[0]+1) if last else 1
+            previous=json.loads(last[1]).get('event_hash') if last else None
+            data['previous_hash']=previous or '0'*64
+            body=json.dumps(data,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+            data['event_hash']=hashlib.sha256(bytes.fromhex(data['previous_hash'])+body).hexdigest()
+            validate_event(data)
+            db.execute('INSERT INTO monitor_events(sequence,event_id,data) VALUES (?,?,?)',
+                       (data['local_sequence'],event_id,json.dumps(data,separators=(',',':'))))
+            if kind=='request_blocked':db.execute('INSERT OR IGNORE INTO monitor_windows VALUES (?,?)',(event_id,data['recorded_at']))
         return event_id
+
+    def preserve_case(self,ids,source,at=None):
+        with closing(self.connect()) as db,db:
+            db.executemany('INSERT OR IGNORE INTO monitor_cases VALUES (?,?,?)',
+                           ((mid,int(time.time()) if at is None else at,source) for mid in ids if type(mid) is int and mid>0))
+
+    def prune_acknowledged(self,now=None):
+        now=int(time.time()) if now is None else now
+        with closing(self.connect()) as db,db:
+            # Unacknowledged events and incident windows are never pruned.
+            db.execute("DELETE FROM monitor_events WHERE acknowledged=1 AND CAST(json_extract(data,'$.recorded_at') AS INTEGER)<? "
+                "AND NOT EXISTS(SELECT 1 FROM monitor_cases c WHERE CAST(json_extract(data,'$.recorded_at') AS INTEGER) "
+                "BETWEEN c.opened_at-900 AND c.opened_at+900) "
+                "AND NOT EXISTS(SELECT 1 FROM monitor_windows w WHERE CAST(json_extract(data,'$.recorded_at') AS INTEGER) "
+                "BETWEEN w.opened_at-900 AND w.opened_at+900)",(now-90*86400,))
+
+    def acknowledge_batch(self,event_ids,envelope):
+        raw=json.dumps(envelope,sort_keys=True,separators=(',',':'))
+        if len(raw)>16384:raise ValueError('Checkpoint too large')
+        with closing(self.connect()) as db,db:
+            db.execute('INSERT OR IGNORE INTO monitor_checkpoints VALUES (?,?,?)',
+                       (hashlib.sha256(raw.encode()).hexdigest(),int(time.time()),raw))
+            db.executemany('UPDATE monitor_events SET acknowledged=1 WHERE event_id=?',((x,) for x in event_ids))
 
     def identity(self):
         with closing(self.connect()) as db, db:
@@ -213,9 +253,18 @@ def record(kind, **fields):
 
 
 def startup(account_id):
-    _default.bind(account_id,os.getenv('MANAGER_ID',''))
     import config
+    from primary_identity import bind
+    data_id=bind(ROOT/config.DATABASE_PATH,_default,account_id,os.getenv('MANAGER_ID',''))
+    from primary_identity import activate_binding
+    activate_binding(account_id,os.getenv('MANAGER_ID',''),data_id)
+    _default.bind(account_id,os.getenv('MANAGER_ID',''))
     _default.seed(ROOT/config.DATABASE_PATH)
+    with closing(_default.connect()) as db:
+        old=[json.loads(r[0]) for r in db.execute("SELECT data FROM monitor_events WHERE json_extract(data,'$.kind') IN ('telegram_deleted','history_missing') ORDER BY sequence")]
+    for row in old:
+        if row['kind']=='history_missing' or row.get('source')=='tracked_private_history':
+            _default.preserve_case(row.get('message_ids',[]),row['kind'],row['recorded_at'])
     from incident_isolation import migrate_observed_pause,reconcile_history
     from telegram_safety import default_journal
     try:
@@ -228,11 +277,15 @@ def startup(account_id):
     files = {}
     for name in ('safe_telegram.py','access_runtime.py','main.py','startup_update.py','bot.py',
                  'incident_monitor.py','telegram_client.py','telegram_safety.py','app_profile_client.py',
-                 'sync_runtime.py','config.py','dialogue_runtime.py'):
-        path = ROOT/name
+                 'sync_runtime.py','config.py','dialogue_runtime.py','forensic_trace.py','forensic_transport.py',
+                 'primary_identity.py','installation_paths.py','unified_install.py','code-manifest.json'):
+        path = CODE_ROOT/name
         if path.exists():
             files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
-    version = (ROOT/'version.txt').read_text('utf-8-sig').strip()
+    import sys,telethon
+    for name,path in [('python-executable',Path(sys.executable)),('telethon-mtprotosender.py',Path(telethon.__file__).parent/'network/mtprotosender.py')]:
+        if path.is_file():files[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+    version = (CODE_ROOT/'version.txt').read_text('utf-8-sig').strip()
     machine=platform.node()
     if os.name=='nt':
         try:
@@ -245,7 +298,14 @@ def startup(account_id):
            version=version, files=files, pid=os.getpid(), installation_id=_default.identity(),
            folder_id=hashlib.sha256(str(ROOT).encode()).hexdigest(),
            machine_id=hashlib.sha256(('DVK-MONITOR-1:'+machine).encode()).hexdigest())
-    report=ROOT/'data/update-network-report.json'
+    inventory=ROOT/'.dvk/legacy-inventory.json'
+    if inventory.is_file():
+        for item in json.loads(inventory.read_text('utf-8')).get('folders',[])[:100]:
+            coverage=('old_copy_running' if item.get('running_pids') else
+                      'old_copy_unverified' if not item.get('process_check_complete') else 'old_copy_redirected')
+            record('installation_snapshot',account_id=account_id,folder_id=item['folder_id'],source='legacy_copy',
+                   evidence={'coverage':coverage,'data_store_id':data_id})
+    report=ROOT/'data/update-network-report.json' 
     if report.is_file():
         try:
             data=json.loads(report.read_text('utf-8'))
@@ -312,7 +372,7 @@ async def flush(client):
                         # A late receipt for another packet is not an acknowledgement.
                         if envelope.get('payload',{}).get('event_id')!=event_id:continue
                         verify_receipt(key,envelope,subject,event_id,event_digest(data))
-                        for member in members:_default.acknowledge(member['event_id'])
+                        _default.acknowledge_batch([member['event_id'] for member in members],envelope)
                         return True
 
 
@@ -379,8 +439,13 @@ async def capture_ttl(client, peer_id=None, notify=None, recorder=None):
 
 
 async def run(client, notify):
+    import config
     from telethon import events
     from telegram_safety import default_journal
+    from primary_identity import snapshot
+    with closing(sqlite3.connect(ROOT/config.DATABASE_PATH)) as db:
+        data_id=db.execute("SELECT value FROM local_settings WHERE key='data_store_id'").fetchone()[0]
+    record('installation_snapshot',account_id=(await client.get_me()).id,evidence=snapshot(client,data_id))
     async def stop_observed(operation):
         incident = default_journal().block(operation)
         if not incident['manager_notified']:
@@ -395,6 +460,7 @@ async def run(client, notify):
         from incident_isolation import isolate
         import config
         try:
+            _default.preserve_case(ids,source)
             scope=isolate(_default,ids,ROOT/config.DATABASE_PATH,source)
             with closing(_default.connect()) as db:
                 peers=[r[0] for r in db.execute('SELECT DISTINCT peer_id FROM monitor_messages WHERE message_id IN ('+
@@ -416,6 +482,12 @@ async def run(client, notify):
         ids = list(event.deleted_ids)
         with closing(_default.connect()) as db:
             tracked=[mid for mid in ids if db.execute('SELECT 1 FROM monitor_messages WHERE message_id=?',(mid,)).fetchone()]
+        raw=getattr(event,'original_update',None)
+        context={'capture_mode':'live_or_catchup_unknown','monotonic_ns':time.monotonic_ns()}
+        for field in ('pts','pts_count'):
+            value=getattr(raw,field,None)
+            if type(value) is int:context[field]=value
+        record('incident_context',message_ids=ids[:2000],count=len(ids),source='telegram_deleted_signal',evidence=context)
         scope=await localize_missing(tracked,'telegram_deleted') if tracked else None
         record('telegram_deleted',message_ids=ids[:2000],count=len(ids),
                source='tracked_private_history' if tracked else 'unattributed_update',
@@ -437,6 +509,9 @@ async def run(client, notify):
         _default.observe([msg.id],event.chat_id)
         # Message-level timer and explicit service changes survive disappearance.
         period=getattr(msg,'ttl_period',None)
+        media_ttl=getattr(getattr(msg,'media',None),'ttl_seconds',None)
+        if type(media_ttl) is int and media_ttl>0:
+            record('monitor_warning',reason_code='media_ttl',source='telegram_update',peer_id=event.chat_id,message_ids=[msg.id],count=media_ttl)
         action=getattr(msg,'action',None)
         if type(period) is int and period>0:
             record('monitor_warning',reason_code='message_ttl',source='telegram_update',
@@ -476,6 +551,7 @@ async def run(client, notify):
                 connected=current
             if now>=heartbeat_at:
                 record('heartbeat',connected=current)
+                _default.prune_acknowledged()
                 heartbeat_at=now+300
             if now>=ttl_at and current:
                 ttl_at=now+900
@@ -524,7 +600,8 @@ async def run(client, notify):
             from incident_isolation import notify_pending
             await notify_pending(_default,notify)
             try:
-                await flush(client)
+                from monitor_capabilities import supported
+                if await supported(client):await flush(client)
             except Exception as exc:
                 print('Журнал контроля ожидает центр ('+type(exc).__name__+').',flush=True)
                 await asyncio.sleep(30)
@@ -589,6 +666,7 @@ def validate_bound_event(data,account_id,subject):
     if data.get('data',{}).get('table')!='monitor_events':return
     event=validate_event(data['data'].get('row'))
     if 'account_id' in event and event['account_id']!=account_id:raise ValueError('Monitor account mismatch')
+    if 'account_id' in event.get('evidence',{}) and event['evidence']['account_id']!=account_id:raise ValueError('Forensic account mismatch')
     if 'manager_id' in event and event['manager_id']+':'+str(account_id)!=subject:
         raise ValueError('Monitor manager mismatch')
 
@@ -607,10 +685,15 @@ def export_report(store,account_id,limit=20000):
         except (ValueError,TypeError,KeyError):continue
         events.append(dict(event_id=row['event_id'],received_at=row['received_at'],
                            installation=data['installation'],company_id=row['company_id'],event=data['data']['row']))
+    organization={}
+    with store.connection() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='manager_directory'").fetchone():
+            card=db.execute('SELECT department,company_name FROM manager_directory WHERE account_id=?',(account_id,)).fetchone()
+            if card:organization=dict(card)
     from owner_notifications import manager_label
-    return dict(protocol='DVK_MONITOR_EXPORT_V1',generated_at=int(time.time()),account_id=account_id,
+    return dict(organization=organization,protocol='DVK_MONITOR_EXPORT_V1',generated_at=int(time.time()),account_id=account_id,
                 manager=manager_label(store,account_id),subject=manager['subject'],company_id=manager['company_id'],
-                events=list(reversed(events)),limit=limit,possibly_truncated=len(rows)==limit,
+                events=list(reversed(events)),limit=limit,possibly_truncated=len(rows)==limit,rejected_events=len(rows)-len(events),
                 limits='Metadata only. Telegram does not identify who deleted a message. '
                        'No events means no evidence, not proof of normal operation. '
                        'Events before module installation cannot be reconstructed.')
@@ -662,6 +745,7 @@ def register_admin(application, store, admin_id):
         text+='\nОшибки программы: '+str(counts.get('runtime_error',0))
         text+='\nЭто события журнала, не полный итог рассылки.'
         await message.reply_text(text,reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton('🔎 Разбор удалений',callback_data='monitor:cases:'+str(account))],
             [InlineKeyboardButton('📄 Выгрузить журнал',callback_data='monitor:export:'+str(account))],
             [InlineKeyboardButton('🔄 Обновить',callback_data='monitor:view:'+str(account))]]))
 
@@ -673,6 +757,18 @@ def register_admin(application, store, admin_id):
         stream=io.BytesIO(raw);stream.name='DVK_MONITOR_'+str(account)+'.json'
         await message.reply_document(document=stream,caption='Журнал событий без текстов переписки и ключей. '
             'Его можно передать для расследования.')
+    async def cases(message,account):
+        try:
+            from forensic_cases import build
+            report=build(export_report(store,account,50000))
+        except ValueError:
+            await message.reply_text('Менеджер не подключён.');return
+        stream=io.BytesIO(json.dumps(report,ensure_ascii=False,indent=2).encode());stream.name='DVK_INVESTIGATION_'+str(account)+'.json'
+        gaps=sum(len(x['gaps'])+len(x['broken_links']) for x in report['chain_coverage'])
+        await message.reply_document(document=stream,caption='Разбор удалений: '+str(len(report['cases']))+
+            ' случаев. Пробелов/нарушений в доступной цепочке: '+str(gaps)+
+            '. Заблокированная попытка не считается выполненным удалением. В файле указаны пределы наблюдения.')
+
     async def status(update,context):
         if update.effective_user.id!=admin_id or update.effective_chat.type!='private':
             return
@@ -696,6 +792,7 @@ def register_admin(application, store, admin_id):
         if parts[1]=='page':await overview(query.message,min(value,1000))
         elif parts[1]=='view':await show(query.message,value)
         elif parts[1]=='export':await download(query.message,value)
+        elif parts[1]=='cases':await cases(query.message,value)
     application.add_handler(CommandHandler('monitor',status))
     application.add_handler(CommandHandler('monitor_export',status))
-    application.add_handler(CallbackQueryHandler(callback,pattern=r'^monitor:(view|export|page):\d+$'),group=-4)
+    application.add_handler(CallbackQueryHandler(callback,pattern=r'^monitor:(view|export|page|cases):\d+$'),group=-4)

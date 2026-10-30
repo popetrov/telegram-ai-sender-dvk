@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 
 def register_receiver(application, store, signing_key, encryption_key, notices=None):
     from telegram.ext import MessageHandler, filters
+    from monitor_capabilities import register
+    register(application,store,signing_key)
     upload_failed = False
     upload_seen = False
 

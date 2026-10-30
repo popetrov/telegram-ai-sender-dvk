@@ -57,8 +57,14 @@ def main(argv=None):
         print("Virtual environment: " + ("present" if environment_python().is_file() else "not created"))
         print("Runtime files: " + (", ".join(missing) if missing else "present"))
         return int(bool(missing) or sys.version_info < (3, 11))
-    from startup_update import run
-    return run(ROOT, updates=not args.no_updates)
+    from installation_paths import state_root
+    data=state_root()
+    if (data/'.dvk/layout.json').is_file():
+        from unified_install import run
+        return run(data,updates=not args.no_updates)
+    from unified_install import adopt_flat,run
+    adopt_flat(data)
+    return run(data,updates=not args.no_updates)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,11 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
   self.recorder=m.Recorder(self.root/'monitor.sqlite')
+  (self.root/'data').mkdir()
+  with sqlite3.connect(self.root/'data/local.sqlite') as db:
+   db.execute('CREATE TABLE local_settings(key TEXT PRIMARY KEY,value TEXT)')
+   db.execute("INSERT INTO local_settings VALUES('data_store_id',?)",('d'*32,))
+  db.close()
   self.store=AuthorityStore(self.root/'center.sqlite');self.store.register(42,'manager_001:42');self.store.assign(42,'dvk')
   self.notices=OwnerNotifications(self.store)
   self.encryption=initialize_encryption_key(self.root/'encryption.key');self.sign=Ed25519PrivateKey.generate()
@@ -75,10 +80,10 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
   with self.assertRaises(ValueError):self.recorder.bind(43,'manager_001')
  async def test_program_send_has_pre_attempt_and_returned_message_id(self):
   client=ProtectedTelegramClient(MemorySession(),123,'a'*32,safety_journal=SafetyJournal(self.root/'safety.sqlite'))
-  response=SimpleNamespace(updates=[SimpleNamespace(message=SimpleNamespace(id=12345,out=True))])
+  response=SimpleNamespace(updates=[SimpleNamespace(message=SimpleNamespace(id=12345,out=True,peer_id=types.PeerUser(77)))])
   with patch.object(m,'_default',self.recorder),patch.object(TelegramClient,'_call',new=AsyncMock(return_value=response)):
    await client._call(Mock(),functions.messages.SendMessageRequest(types.InputPeerUser(77,0),'PRIVATE MESSAGE'))
-  events=self.rows();self.assertEqual([e['kind'] for e in events],['send_attempt','send_result'])
+  events=[r for r in self.rows() if r['kind']!='forensic_operation'];self.assertEqual([e['kind'] for e in events],['send_attempt','send_result'])
   self.assertEqual(events[1]['message_ids'],[12345]);self.assertEqual(events[1]['request_id'],events[0].get('request_id',events[1]['request_id']))
   self.assertNotIn('PRIVATE MESSAGE',json.dumps(events))
  async def test_error_and_cancellation_are_recorded_without_message_text(self):
@@ -119,6 +124,10 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
   class Dummy:
    def __init__(self):self.handlers=[];self.get_messages=AsyncMock(return_value=[SimpleNamespace(id=321,message='not exported')])
    def add_event_handler(self,callback,event):self.handlers.append(callback)
+   async def get_me(self):return SimpleNamespace(id=42)
+   _self_id=42
+   session=SimpleNamespace(auth_key=SimpleNamespace(key=b'synthetic'))
+   _sender=SimpleNamespace(_dvk_forensic_guard=True)
    def remove_event_handler(self,callback):pass
    def is_connected(self):return True
    async def __call__(self,request):return SimpleNamespace(authorizations=[])
@@ -143,6 +152,10 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
   class Dummy:
    def __init__(self):self.handlers=[];self.get_messages=AsyncMock(side_effect=TimeoutError)
    def add_event_handler(self,callback,event):self.handlers.append(callback)
+   async def get_me(self):return SimpleNamespace(id=42)
+   _self_id=42
+   session=SimpleNamespace(auth_key=SimpleNamespace(key=b'synthetic'))
+   _sender=SimpleNamespace(_dvk_forensic_guard=True)
    def remove_event_handler(self,callback):pass
    def is_connected(self):return True
    async def __call__(self,request):return SimpleNamespace(authorizations=[])
@@ -163,6 +176,7 @@ class MonitoringIntegration(unittest.IsolatedAsyncioTestCase):
 
  async def test_technical_lease_does_not_become_customer_history(self):
   client=ProtectedTelegramClient(MemorySession(),123,'a'*32,safety_journal=SafetyJournal(self.root/'protocol-safety.sqlite'))
+  client._mb_entity_cache.extend([types.User(77,bot=True,access_hash=1)],[])
   response=SimpleNamespace(updates=[SimpleNamespace(message=SimpleNamespace(id=54321,out=True))])
   with patch.object(m,'_default',self.recorder),patch.object(TelegramClient,'_call',new=AsyncMock(return_value=response)):
    await client._call(Mock(),functions.messages.SendMessageRequest(types.InputPeerUser(77,0),'/lease protocol_payload'))

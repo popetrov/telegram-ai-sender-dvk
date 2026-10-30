@@ -110,7 +110,7 @@ class SafetyJournal:
             db.close()
 
 
-_DEFAULT_JOURNAL = SafetyJournal(Path(__file__).resolve().parent / 'data/telegram-safety.sqlite')
+_DEFAULT_JOURNAL = SafetyJournal(__import__('installation_paths').state_root() / 'data/telegram-safety.sqlite')
 
 
 def default_journal():

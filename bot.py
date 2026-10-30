@@ -1718,10 +1718,9 @@ async def _send_one_prepared_message(
         update_prepared_status(item,'manual_review',str(exc))
         return 'send_failed',str(exc)
     try:
-        sent_message = await telegram_client.send_message(
-            entity,
-            final_message,
-        )
+        from forensic_trace import origin
+        with origin('campaign','messages',message_id):
+            sent_message = await telegram_client.send_message(entity,final_message)
     except Exception as exc:
         from telegram_safety import SafetyStop
         if isinstance(exc, SafetyStop):
@@ -2344,4 +2343,6 @@ def create_bot() -> Application:
     register_reports(application,root=Path.cwd(),allowed=user_is_allowed)
     from bot_menu import register as register_menu
     register_menu(application,role='sender',allowed=lambda u:u.effective_chat.type=='private' and user_is_allowed(u))
+    from installation_ui import register as register_installation
+    register_installation(application,is_controller)
     return application

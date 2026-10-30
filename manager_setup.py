@@ -63,7 +63,7 @@ def main():
     parser.add_argument('--service-bot', help='Move machine exchange to a dedicated service bot; keep keys and manager identity')
     parser.add_argument('--center-config',type=Path,help='Apply owner-supplied public center configuration to this stopped installation')
     args = parser.parse_args()
-    path = Path(__file__).resolve().parent / '.env'
+    path = __import__('installation_paths').state_root() / '.env'
     if not path.exists():
         raise RuntimeError('Сначала создайте .env по образцу .env.example с личными ключами менеджера.')
     current = dotenv_values(path)

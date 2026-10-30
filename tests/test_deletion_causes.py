@@ -24,7 +24,7 @@ class CauseProtection(unittest.IsolatedAsyncioTestCase):
   with patch.object(m,'_default',self.r):
    with self.assertRaises(TelegramDeletionBlocked):sender.send(req)
   original.assert_not_called()
-  event=self.events()[0];self.assertEqual(event['operation'],'ephemeral_media_ttl');self.assertEqual(event['peer_id'],77)
+  event=next(r for r in self.events() if r['kind']=='request_blocked');self.assertEqual(event['operation'],'ephemeral_media_ttl');self.assertEqual(event['peer_id'],77)
   self.assertNotIn('secret',json.dumps(event))
  async def test_batch_and_wrapper_media_timer_detected(self):
   req=functions.messages.SendMediaRequest(types.InputPeerUser(77,0),types.InputMediaPhoto(types.InputPhoto(1,2,b''),ttl_seconds=1),'x')
@@ -40,7 +40,7 @@ class CauseProtection(unittest.IsolatedAsyncioTestCase):
   req=functions.messages.DeleteHistoryRequest(types.InputPeerUser(77,0),max_id=0)
   with patch.object(m,'_default',self.r):
    with self.assertRaises(TelegramDeletionBlocked):self.c._check_request(req)
-  self.assertEqual(self.events()[0]['peer_id'],77)
+  self.assertEqual(next(r for r in self.events() if r['kind']=='request_blocked')['peer_id'],77)
   self.assertEqual(safe_targets(functions.InvokeWithoutUpdatesRequest(functions.messages.DeleteMessagesRequest([9,10],revoke=True)))['message_ids'],[9,10])
  async def test_disk_failure_cannot_allow_ephemeral_send(self):
   with patch.object(m,'record',side_effect=OSError()):

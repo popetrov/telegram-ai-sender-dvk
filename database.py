@@ -33,6 +33,8 @@ def get_connection():
     connection.execute("PRAGMA busy_timeout = 30000")
 
     try:
+        from primary_identity import require_connection
+        require_connection(connection)
         with connection:
             yield connection
     finally:
@@ -105,6 +107,8 @@ def _verify_manager_id(connection: sqlite3.Connection) -> str:
 
 def init_database() -> None:
     with get_connection() as connection:
+        from data_schema import migrate
+        migrate(connection)
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS clients (

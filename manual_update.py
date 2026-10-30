@@ -18,6 +18,8 @@ import tempfile
 import zipfile
 
 RUNTIME = {
+    'monitor_capabilities.py','installation_inventory.py','installation_ui.py','data_schema.py','primary_identity.py','forensic_cases.py',
+    'installation_paths.py','unified_install.py','forensic_trace.py','forensic_transport.py',
     'service_reports.py','service_reports_runtime.py','ai_costs.py',
     'incident_monitor.py','incident_isolation.py',
     'legal_research.py',

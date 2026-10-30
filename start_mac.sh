@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
+if [[ -f .dvk/layout.json && -x venv/bin/python ]]; then
+    exec "$PWD/venv/bin/python" start.py "$@"
+fi
 if [[ -f data/python-path.txt ]]; then
     IFS= read -r DVK_PYTHON < data/python-path.txt || true
     if [[ -n "${DVK_PYTHON:-}" && -x "$DVK_PYTHON" ]]; then

@@ -1,16 +1,27 @@
 # Resolve relative database/session paths before importing clients.
 import os
 from pathlib import Path
-os.chdir(Path(__file__).resolve().parent)
+from installation_paths import state_root
+os.chdir(state_root())
 if __name__ == '__main__':
+    code=Path(__file__).resolve().parent
+    if code!=state_root():
+        from unified_install import layout,verify_code
+        current=layout(state_root())
+        if current['active']!=code.name:
+            raise SystemExit('Эта версия уже заменена. Запустите программу привычным ярлыком.')
+        verify_code(code)
+        if Path('.dvk/migration-pending.json').exists() and '--self-check' not in __import__('sys').argv:
+            raise SystemExit('Обновление не завершено. Запустите обычный ярлык для восстановления.')
     if Path('data/security-install-pending.json').exists():
         raise SystemExit('Установка защиты не завершена. Повторите файл установки защиты; программа не запущена.')
-    if Path('data/active-installation.json').exists():
+    if Path(__file__).resolve().parent==state_root() and Path('data/active-installation.json').exists():
         raise SystemExit('Эта папка уже обновлена. Запустите программу привычным start.bat (на Mac — start_mac.sh).')
     import atexit
     from file_lock import FileLock
     _process_lock = FileLock(Path('data/sender.lock'))
-    _process_lock.__enter__()
+    if not ('--self-check' in __import__('sys').argv and Path('.dvk/migration-pending.json').is_file()):
+        _process_lock.__enter__()
     atexit.register(_process_lock.__exit__)
     import sys
     if '--self-check' in sys.argv:
@@ -178,6 +189,9 @@ async def main():
     reporting_task = None
 
     try:
+        if Path('.dvk/layout.json').is_file():
+            from unified_install import layout,json_write
+            current=layout(Path.cwd());current['started']=True;json_write(Path('.dvk/layout.json'),current)
         await ensure_telegram_authorized()
         await connect()
         import incident_monitor

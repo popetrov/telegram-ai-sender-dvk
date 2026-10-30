@@ -45,7 +45,7 @@ if __name__=='__main__':
     parser.add_argument('--product',choices=['БГ','Кредит'],default='БГ')
     args=parser.parse_args()
     try:
-        result=configure(Path(__file__).resolve().parent,username=args.peer,product=args.product)
+        result=configure(__import__('installation_paths').state_root(),username=args.peer,product=args.product)
         print('Настроен только один тестовый контакт. Запустите программу привычным способом; сохранённая рассылка не запускается.')
     except (OSError,ValueError,RuntimeError,sqlite3.Error) as exc:
         print('Настройка не выполнена: '+str(exc))

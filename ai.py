@@ -6,7 +6,7 @@ import config
 
 
 MODEL = "gpt-5-mini"
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = __import__("installation_paths").state_root()
 PRODUCTS_FILE = BASE_DIR / "products.json"
 
 

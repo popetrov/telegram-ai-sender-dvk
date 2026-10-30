@@ -174,8 +174,24 @@ def unpack_bundle(raw, destination):
     verify_bundle(destination)
 
 
+def load_unified(root):
+    import importlib.util
+    root=Path(root).resolve();record=json.loads((root/'.dvk/layout.json').read_text('utf-8'))
+    rid=record.get('active','')
+    if record.get('format')!=1 or not isinstance(rid,str) or not re.fullmatch('[0-9a-f]{32}',rid):raise ValueError('Invalid unified layout')
+    code=root/'.dvk/runtime'/rid
+    if code.is_symlink() or not code.resolve().is_relative_to(root):raise ValueError('Unsafe unified runtime')
+    manifest=json.loads((code/'code-manifest.json').read_text('utf-8'))
+    module=code/'unified_install.py'
+    if hashlib.sha256(module.read_bytes()).hexdigest()!=manifest['files']['unified_install.py']:raise ValueError('Unified updater changed')
+    spec=importlib.util.spec_from_file_location('unified_install',module)
+    loaded=importlib.util.module_from_spec(spec);sys.modules['unified_install']=loaded;spec.loader.exec_module(loaded)
+    return loaded
+
+
 def active_installation(root):
     root = Path(root).resolve()
+    if (root/'.dvk/layout.json').is_file():return load_unified(root).runtime(root)
     pointer = root / 'data/active-installation.json'
     if not pointer.exists():
         return root
@@ -214,6 +230,27 @@ def prepare_update(source, candidate, bundle, tag):
                    env={**os.environ,'PYTHONIOENCODING':'utf-8'})
 
 
+def prepare_unified_update(root,bundle,tag):
+    """Incoming full-package updater. Caller holds permanent startup/sender locks."""
+    import importlib.util
+    from transition_setup import verify_bundle
+    import manual_update
+    root,bundle=Path(root).resolve(),Path(bundle).resolve()
+    manifest,_,_=verify_bundle(bundle)
+    meta,payload=manual_update.verify_package(bundle/'manager-package.zip',manifest['files']['manager-package.zip'])
+    if version(meta['version'])!=version(tag):raise ValueError('Update version mismatch')
+    current=load_unified(root)
+    current.runtime(root)  # attest old code, not permanent launcher stubs
+    for helper in ('installation_inventory.py',):
+        (bundle/helper).write_bytes(payload[helper])
+    module=bundle/'unified_install.py';module.write_bytes(payload['unified_install.py'])
+    spec=importlib.util.spec_from_file_location('unified_install',module)
+    adapter=importlib.util.module_from_spec(spec);sys.modules['unified_install']=adapter;spec.loader.exec_module(adapter)
+    code=adapter.prepare_code(root,payload)
+    adapter.activate(root,code,root)
+    return code
+
+
 def _prepare_verified_update(source, candidate, bundle, tag):
     import manual_update
     from transition_setup import prepare_transition, finish_transition, verify_bundle
@@ -222,6 +259,32 @@ def _prepare_verified_update(source, candidate, bundle, tag):
     metadata, payload = manual_update.verify_package(package, manifest['files']['manager-package.zip'])
     if version(metadata['version']) != version(tag):
         raise ValueError('Release and package versions differ')
+    # Old clients extract only the fixed transition file list. Load this adapter
+    # from the already verified manager payload without changing that wire format.
+    if 'unified_install.py' in payload:
+        old_baseline=source/'data/installed-baseline.json'
+        if (source/'.dvk/layout.json').is_file():
+            load_unified(source).runtime(source)
+        elif old_baseline.is_file():
+            reviewed=json.loads(old_baseline.read_text('utf-8'))
+            for name,text in reviewed.items():
+                if name not in manual_update.RUNTIME or name in ('products.json','.env.example') or name.startswith('prompts/'):continue
+                p=source/name
+                if not p.is_file() or p.is_symlink() or not manual_update.same_text(p.read_bytes(),text.encode('utf-8')):
+                    raise ValueError('Locally modified runtime: '+name)
+        else:
+            _,_,profiles=verify_bundle(bundle)
+            from transition_setup import inspect_source
+            inspect_source(source,profiles)
+        import importlib.util
+        for helper in ('installation_inventory.py',):
+            (bundle/helper).write_bytes(payload[helper])
+        module_path=bundle/'unified_install.py'
+        module_path.write_bytes(payload['unified_install.py'])
+        spec=importlib.util.spec_from_file_location('unified_install',module_path)
+        adapter=importlib.util.module_from_spec(spec);sys.modules['unified_install']=adapter;spec.loader.exec_module(adapter)
+        return adapter.prepare_legacy(source,candidate,payload)
+
     baseline_path = source / 'data/installed-baseline.json'
     if baseline_path.is_file():
         baseline = json.loads(baseline_path.read_text('utf-8'))
@@ -297,6 +360,9 @@ def recover_legacy(root, bundle):
 def run(root, *, updates=True, discover=latest_bundle, prepare=prepare_update, launch=None,
         initial_bundle=None):
     root = Path(root).resolve()
+    if (root/'.dvk/layout.json').is_file():
+        adapter=load_unified(root)
+        return adapter.run(root,updates=updates,discover=discover,launch_fn=(lambda r,c:launch(c)) if launch is not None else adapter.launch)
     global _transition_stage
     _transition_stage='active_installation_check'
     os.environ['DVK_LAUNCHER_ROOT']=str(root)

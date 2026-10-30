@@ -91,11 +91,13 @@ def install(root, raw, expected, *, check_only=False, running=running_senders):
                        env=environment,check=True)
         from startup_update import active_installation
         active = active_installation(root)
-        if active == root or not (active/'data/installed-baseline.json').is_file():
+        if active == root or not ((active/'data/installed-baseline.json').is_file() or ((root/'.dvk/layout.json').is_file() and (root/'data/installed-baseline.json').is_file())):
             raise RuntimeError('Новая установка ещё не готова. Данные сохранены; повторите обновление.')
-        if (active/'version.txt').read_text('utf-8-sig').strip() != '2.0.20':
+        with zipfile.ZipFile(bundle/'manager-package.zip') as archive:
+            expected_version=json.loads(archive.read('manifest.json'))['version']
+        if (active/'version.txt').read_text('utf-8-sig').strip() != expected_version:
             raise RuntimeError('Неожиданная версия после перехода.')
-        print('Обновление до 2.0.20 завершено. Привычный start_mac.sh теперь запускает новую версию.',flush=True)
+        print('Обновление до '+expected_version+' завершено. Используйте привычный start_mac.sh.',flush=True)
         if not check_only:
             return subprocess.run([sys.executable,str(root/'launcher.py')],cwd=root,env=environment).returncode
     return 0

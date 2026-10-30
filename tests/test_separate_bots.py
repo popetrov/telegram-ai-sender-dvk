@@ -70,8 +70,8 @@ class SeparateBotsTests(unittest.IsolatedAsyncioTestCase):
     def test_service_has_no_admin_commands(self):
         app = create_server('124:service',99,self.signer,self.store,X25519PrivateKey.generate(),
                             role='service',notices=self.notices)
-        commands = set().union(*(getattr(h,'commands',set()) for h in app.handlers[0]))
-        self.assertEqual(commands,{'lease','safety','research_status'})
+        commands = set().union(*(getattr(h,'commands',set()) for group in app.handlers.values() for h in group))
+        self.assertEqual(commands,{'lease','safety','research_status','monitor_caps'})
 
     async def test_connection_notice_sent_only_once_and_via_admin_bot(self):
         self.store.register(42,'m:42')

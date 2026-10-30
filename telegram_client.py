@@ -21,7 +21,7 @@ async def connect():
     me = await client.get_me()
     from app_profile_client import check_account
     from pathlib import Path
-    check_account(Path(__file__).resolve().parent,me.id)
+    check_account(__import__("installation_paths").state_root(),me.id)
     from account_guard import claim_account
     claim_account(me.id)
 

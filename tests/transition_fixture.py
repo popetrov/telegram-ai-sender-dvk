@@ -23,6 +23,8 @@ def create_fixture(baselines,destination,profile_name='windows-2.0.19'):
     (destination/'.env').write_text(''.join(k+'='+v+'\n' for k,v in settings.items()),encoding='utf-8')
     subprocess.run([sys.executable,'-c','import database; database.init_database()'],cwd=destination,
                    env={**os.environ,**settings},check=True,capture_output=True)
+    from telethon.sessions import SQLiteSession
+    session=SQLiteSession(str(destination/'fixture_session'));session.close()
     db = sqlite3.connect(destination/'fixture_session.session')
     try:
         db.execute('CREATE TABLE fixture_data(value TEXT)')

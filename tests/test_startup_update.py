@@ -150,42 +150,37 @@ class StartupUpdateTests(unittest.TestCase):
         self.assertEqual(update.active_installation(self.root),fallback)
 
     def test_real_preparation_without_network_preserves_data_and_records_baseline(self):
-        candidate = self.root.with_name('candidate')
-        with FileLock(self.root/'data/sender.lock'), patch('transition_setup.subprocess.run'):
+        import os,uuid
+        candidate=self.root.with_name(self.root.name+'_dvk_'+uuid.uuid4().hex)
+        before=(self.root/'.env').read_bytes()
+        with patch.dict(os.environ,{'DVK_LAUNCHER_ROOT':str(self.root)}),FileLock(self.root/'data/sender.lock'),patch('transition_setup.subprocess.run'),patch('installation_inventory.processes',return_value=([],True)):
             update._prepare_verified_update(self.root,candidate,self.bundle,self.tag)
-        self.assertTrue((candidate/'data/installed-baseline.json').is_file())
-        self.assertEqual((candidate/'.env').read_bytes(),(self.root/'.env').read_bytes())
-        self.assertEqual(json.loads((candidate/'transition-report.json').read_text())['ready_for_pilot'],True)
+        self.assertTrue((self.root/'data/installed-baseline.json').is_file())
+        self.assertEqual((self.root/'.env').read_bytes(),before)
+        self.assertEqual(set(p.name for p in candidate.iterdir()),{'main.py','DVK_TRANSITION_STUB.json'})
+        self.assertTrue((self.root/'.dvk/layout.json').is_file())
 
     def test_next_update_uses_active_database_and_preserves_custom_prompt_without_git(self):
-        import manual_update
-        first = self.root.with_name('first')
-        with FileLock(self.root/'data/sender.lock'), patch('transition_setup.subprocess.run'):
+        import manual_update,os,uuid
+        first=self.root.with_name(self.root.name+'_dvk_'+uuid.uuid4().hex)
+        with patch.dict(os.environ,{'DVK_LAUNCHER_ROOT':str(self.root)}),FileLock(self.root/'data/sender.lock'),patch('transition_setup.subprocess.run'),patch('installation_inventory.processes',return_value=([],True)):
             update._prepare_verified_update(self.root,first,self.bundle,self.tag)
-        (first/'prompts/bg.md').write_text('Local manager text',encoding='utf-8')
-        with sqlite3.connect(first/'data/local.sqlite') as db:
+        (self.root/'prompts/bg.md').write_text('Local manager text',encoding='utf-8')
+        with sqlite3.connect(self.root/'data/local.sqlite') as db:
             db.execute('CREATE TABLE after_first_update(value TEXT)')
             db.execute("INSERT INTO after_first_update VALUES ('latest local data')")
         db.close()
-        package_source = self.root.with_name('release-source')
-        package_source.mkdir()
+        package_source=self.root.with_name('release-source');package_source.mkdir()
         for name in manual_update.package_files(ROOT):
-            target = package_source/name
-            target.parent.mkdir(parents=True,exist_ok=True)
-            shutil.copy2(ROOT/name,target)
+            target=package_source/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,target)
         (package_source/'version.txt').write_text(self.next_version)
-        package = self.root.with_name('next-manager.zip')
-        build_package(package_source,package)
-        bundle_zip = self.root.with_name('next-transition.zip')
-        build_transition(ROOT,bundle_zip,package)
-        bundle = self.root.with_name('next-bundle')
-        bundle.mkdir()
-        update.unpack_bundle(bundle_zip.read_bytes(),bundle)
-        candidate = self.root.with_name('second')
-        with FileLock(first/'data/sender.lock'), patch('transition_setup.subprocess.run'):
-            update._prepare_verified_update(first,candidate,bundle,'v'+self.next_version)
-        self.assertEqual((candidate/'prompts/bg.md').read_text('utf-8'),'Local manager text')
-        with sqlite3.connect(candidate/'data/local.sqlite') as db:
+        package=self.root.with_name('next-manager.zip');build_package(package_source,package)
+        bundle_zip=self.root.with_name('next-transition.zip');build_transition(ROOT,bundle_zip,package)
+        bundle=self.root.with_name('next-bundle');bundle.mkdir();update.unpack_bundle(bundle_zip.read_bytes(),bundle)
+        with FileLock(self.root/'data/sender.lock'),patch('transition_setup.subprocess.run'),patch('installation_inventory.processes',return_value=([],True)):
+            update.prepare_unified_update(self.root,bundle,'v'+self.next_version)
+        self.assertEqual((self.root/'prompts/bg.md').read_text('utf-8'),'Local manager text')
+        with sqlite3.connect(self.root/'data/local.sqlite') as db:
             self.assertEqual(db.execute('SELECT value FROM after_first_update').fetchone()[0],'latest local data')
         db.close()
-        self.assertFalse((candidate/'data/active-installation.json').exists())
+        self.assertFalse((self.root/'data/active-installation.json').exists())

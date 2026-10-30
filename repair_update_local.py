@@ -60,7 +60,14 @@ def known_bridge(data):
 
 
 def repair(root):
-    root=Path(root).resolve();active=startup_update.active_installation(root)
+    root=Path(root).resolve()
+    if (root/'.dvk/layout.json').is_file():
+        # This legacy repair must never rewrite immutable code generations or
+        # replace the permanent bootstrap after the one-folder transition.
+        active=startup_update.active_installation(root)
+        print('Единая установка уже действует. Используйте прежний файл запуска.',flush=True)
+        return active
+    active=startup_update.active_installation(root)
     targets=list(dict.fromkeys([root,active]))
     new=(HERE/'startup_update.py').read_bytes();compile(new,'startup_update.py','exec')
     originals={};replacements={};marker='updater-repair-'+uuid.uuid4().hex

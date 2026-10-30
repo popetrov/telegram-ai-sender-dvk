@@ -156,23 +156,37 @@ def main(argv=None):
     parser.add_argument('--prepare-only',action='store_true')
     args = parser.parse_args(argv)
     source = args.source or Path(input('Полный путь к старой папке программы: ').strip().strip('"'))
-    destination = args.destination or source.with_name(source.name+'_new')
+    if args.destination and args.destination.resolve()!=source.resolve():
+        raise ValueError('Новая версия использует прежнюю папку. Не задавайте другую папку назначения.')
     if not args.sender_stopped:
-        print('Закройте старую программу и её окно запуска. Старые версии не имеют надёжной блокировки процесса.')
-        if input('После остановки введите STOPPED: ').strip() != 'STOPPED':
-            return 1
-    report = prepare_transition(source,destination)
-    print('Новая папка создана: '+str(destination))
-    if report['conflicts']:
-        print('Нужно проверить конфликты в update_report.json. Старая программа сохранена.')
-        return 2
+        print('Закройте программу и её окно запуска перед обновлением.')
+        if input('После остановки введите STOPPED: ').strip()!='STOPPED':return 1
+    from startup_update import active_installation,_prepare_verified_update,prepare_unified_update
+    import uuid
+    root=source.resolve();active=active_installation(root)
+    manifest,_,_=verify_bundle(ROOT)
+    meta,payload=manual_update.verify_package(ROOT/'manager-package.zip',manifest['files']['manager-package.zip'])
     if args.prepare_only:
-        print('Подготовка закончена. Зависимости и запуск пока не проверены.')
+        print('Пакет '+meta['version']+' проверен. Рабочая установка не изменена.')
         return 0
-    finish_transition(destination)
-    print('Локальные проверки пройдены. Для первого подключения откройте новую папку и запустите start.bat.')
-    print('До подтверждения работы новой папки не удаляйте и не запускайте одновременно старую установку.')
-    print('При ошибке закройте новую программу и вернитесь к старой папке. Автоматического переключения не было.')
+    with FileLock(root/'data/startup.lock'),FileLock(active/'data/sender.lock'):
+        if (root/'.dvk/layout.json').is_file():
+            prepare_unified_update(root,ROOT,meta['version'])
+        else:
+            stub=root.with_name(root.name+'_dvk_'+uuid.uuid4().hex)
+            old=os.environ.get('DVK_LAUNCHER_ROOT');os.environ['DVK_LAUNCHER_ROOT']=str(root)
+            try:_prepare_verified_update(active,stub,ROOT,meta['version'])
+            finally:
+                if old is None:os.environ.pop('DVK_LAUNCHER_ROOT',None)
+                else:os.environ['DVK_LAUNCHER_ROOT']=old
+            # No legacy parent needs this compatibility launcher in the manual path.
+            if stub.is_dir() and not stub.is_symlink() and set(p.name for p in stub.iterdir())=={'main.py','DVK_TRANSITION_STUB.json'}:
+                record=json.loads((stub/'DVK_TRANSITION_STUB.json').read_text('utf-8'))
+                if record.get('data_free') and record.get('caller')==str(root):
+                    import shutil
+                    shutil.rmtree(stub)
+    print('Обновление '+meta['version']+' проверено. Запускайте программу прежним файлом запуска.')
+    print('Старые папки можно удалять только при отметке «можно удалить» в разделе установки.')
     return 0
 
 
@@ -184,5 +198,5 @@ if __name__=='__main__':
         raise SystemExit(main())
     except (OSError,ValueError,RuntimeError,subprocess.CalledProcessError) as exc:
         print('Переход остановлен: '+str(exc))
-        print('Старая установка не заменялась. Проверьте новую папку и отчёты перед повторной попыткой.')
+        print('Данные сохранены. Не запускайте старые копии; передайте владельцу сообщение об ошибке.')
         raise SystemExit(1)

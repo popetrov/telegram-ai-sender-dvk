@@ -93,6 +93,7 @@ class PilotPackagingTests(unittest.TestCase):
     def test_pilot_start_does_not_use_legacy_updater(self):
         from unittest.mock import patch
         import start
-        with patch('startup_update.run', return_value=0) as command:
+        with patch('unified_install.run', return_value=0) as command, patch('unified_install.adopt_flat') as adopt:
             self.assertEqual(start.main([]), 0)
+            adopt.assert_called_once_with(start.ROOT)
             command.assert_called_once_with(start.ROOT, updates=True)
