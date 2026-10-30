@@ -223,7 +223,7 @@ def activate(root,code,source,*,check=verify_environment,private=False):
         if relative in prior:continue
         if target.exists():snapshot_file(target,backup/relative);prior[relative]=True
         else:prior[relative]=False
-    for name in list(configs)+['requirements.txt','center-public.json','version.txt','start.py','main.py','launcher.py','start_mac.sh','start.bat','data/installed-baseline.json']:
+    for name in list(configs)+['requirements.txt','center-public.json','version.txt','start.py','main.py','launcher.py','start_mac.sh','start.bat','data/python-path.txt','data/installed-baseline.json']:
         p=root/name
         if name in prior:continue
         if p.exists():snapshot_file(p,backup/name);prior[name]=True
@@ -248,7 +248,13 @@ def activate(root,code,source,*,check=verify_environment,private=False):
         for p in files:
             relative=p.relative_to(source).as_posix();snapshot_file(p,root/relative);written.append(relative)
         for name,data in configs.items():atomic(root/name,data);written.append(name)
-        for name in ('requirements.txt','center-public.json','version.txt','start_mac.sh','start.bat'):atomic(root/name,payload[name]);written.append(name)
+        for name in ('requirements.txt','center-public.json','version.txt'):atomic(root/name,payload[name]);written.append(name)
+        # CMD reads batch files incrementally. Replacing its current script
+        # shifts byte offsets and can turn :SAVED into an AVED command.
+        for name in ('start_mac.sh','start.bat'):
+            if not (root/name).exists():atomic(root/name,payload[name]);written.append(name)
+        saved_python='venv\\Scripts\\python.exe' if os.name=='nt' else './venv/bin/python'
+        atomic(root/'data/python-path.txt',(saved_python+'\n').encode('ascii'));written.append('data/python-path.txt')
         # Code-only layout selection makes self-check use the permanent data root.
         value=dict(format=FORMAT,data_root='.',active=code.name,previous=previous['active'] if previous else None,
                    manager_id=manager,private_work=bool(private),schema=1,activated_at=int(time.time()),started=False)
@@ -264,6 +270,8 @@ def activate(root,code,source,*,check=verify_environment,private=False):
         written.append('data/installed-baseline.json')
         json_write(root/'.dvk/last-transition.json',dict(journal_value,phase='activated',old_folder=str(source),safe_to_delete=False))
         journal.unlink()
+        try:clean_transition_stubs(root)
+        except (OSError,ValueError):pass
         # Snapshot is code/state before FIRST business launch. No later data rollback.
         try:cleanup_recovery(root)
         except OSError:json_write(root/'.dvk/cleanup-pending.json',dict(recovery=True))
@@ -333,6 +341,7 @@ def run(root,*,updates=True,discover=None,check=verify_environment,launch_fn=lau
     if (root/'.dvk/migration-pending.json').exists():raise ValueError('Migration incomplete; refusing stale sender')
     with FileLock(root/'data/startup.lock'):
         record=layout(root);active=runtime(root,record)
+        clean_transition_stubs(root)
         prune(root)
         if updates and not record.get('private_work'):
             from startup_update import latest_bundle,unpack_bundle
@@ -480,6 +489,42 @@ def compatibility_caller(source,candidate):
     raise ValueError('Launcher does not own source installation')
 
 
+def clean_transition_stubs(root):
+    """Best-effort deletion of registered code-only shells; never user state."""
+    root=Path(root).resolve();registry=root/'.dvk/transition-cleanup'
+    owned_directory(root,registry);removed=0;deferred=0
+    if registry.is_dir():
+        for entry in list(registry.glob('*.json'))[:1000]:
+            try:
+                if linked(entry):raise ValueError('Linked cleanup record')
+                r=json.loads(entry.read_text('utf-8'))
+                folder=Path(r['folder']);caller=Path(r['caller'])
+                name=re.fullmatch(r'(.+)_dvk_[0-9a-f]{32}',folder.name)
+                if (r.get('format')!=1 or r.get('root')!=str(root) or folder.parent!=root.parent
+                        or caller.parent!=root.parent or linked(folder) or name is None
+                        or (folder.parent/name[1]).resolve()!=caller):
+                    raise ValueError('Unsafe transition cleanup')
+                expected=r['files']
+                if set(expected)!={'main.py','DVK_TRANSITION_STUB.json'}:raise ValueError('Invalid shell manifest')
+                if folder.exists():
+                    actual=list(folder.iterdir())
+                    if any(p.name not in expected or linked(p) or not p.is_file() or digest(p)!=expected[p.name] for p in actual):
+                        raise ValueError('Shell contains unowned files')
+                    for p in actual:p.unlink()
+                    folder.rmdir()
+                entry.unlink();removed+=1
+            except (OSError,ValueError,KeyError,TypeError):deferred+=1
+    # Releases40/41 could leave an empty shell after WinError32 deleted its
+    # two files. Only rmdir on an empty, exact namespace is permitted here.
+    pattern=re.compile(re.escape(root.name)+r'(?:_dvk_[0-9a-f]{32})+',re.I if os.name=='nt' else 0)
+    for p in list(root.parent.iterdir())[:1000]:
+        if p==root or not pattern.fullmatch(p.name) or linked(p) or not p.is_dir():continue
+        try:
+            if not any(p.iterdir()):p.rmdir();removed+=1
+        except OSError:deferred+=1
+    return dict(removed=removed,deferred=deferred)
+
+
 def prepare_legacy(source,candidate,payload,*,check=verify_environment):
     """Adapter called by the OLD updater while it still holds its locks.
 
@@ -511,17 +556,30 @@ def prepare_legacy(source,candidate,payload,*,check=verify_environment):
         ctypes.windll.kernel32.SetFileAttributesW(str(candidate),2)
     marker=dict(format=1,root=str(root),caller=str(caller),runtime=code.name,data_free=True)
     json_write(candidate/'DVK_TRANSITION_STUB.json',marker)
-    stub=('import json,os,shutil,subprocess\nfrom pathlib import Path\n'
+    stub=('import json,os,subprocess,sys,re\nfrom pathlib import Path\n'
           'here=Path(__file__).resolve().parent\n'
-          'r=json.loads((here/"DVK_TRANSITION_STUB.json").read_text("utf-8"))\n'
-          'root=Path(r["root"]).resolve(); code=root/".dvk/runtime"/r["runtime"]\n'
-          'caller=Path(r["caller"]).resolve()\n'
+          'r='+repr(marker)+'\n'
+          'root=Path(r["root"]).resolve();caller=Path(r["caller"]).resolve()\n'
           'assert r["data_free"] and here.parent==caller.parent and caller.parent==root.parent and not here.is_symlink()\n'
+          'os.chdir(root)\n'
+          'record=json.loads((root/".dvk/layout.json").read_text("utf-8"))\n'
+          'assert record["format"]==1 and record["data_root"]=="." and re.fullmatch("[0-9a-f]{32}",record["active"])\n'
+          'code=root/".dvk/runtime"/record["active"]\n'
           'python=root/"venv"/("Scripts/python.exe" if os.name=="nt" else "bin/python")\n'
           'p=caller/"data/active-installation.json"\n'
-          'if p.exists() and json.loads(p.read_text("utf-8")).get("directory")==here.name:p.unlink()\n'
-          'if set(x.name for x in here.iterdir())<={"main.py","DVK_TRANSITION_STUB.json"}:shutil.rmtree(here)\n'
+          'try:\n'
+          ' if p.exists() and json.loads(p.read_text("utf-8")).get("directory")==here.name:p.unlink()\n'
+          'except (OSError,ValueError):pass\n'
+          'sys.path.insert(0,str(code))\n'
+          'import unified_install as cleanup\n'
+          'cleanup.verify_code(code)\n'
+          'try:cleanup.clean_transition_stubs(root)\n'
+          'except (OSError,ValueError):pass\n'
           'raise SystemExit(subprocess.run([str(python),str(code/"main.py")],cwd=root).returncode)\n')
+    key=hashlib.sha256(str(candidate).encode()).hexdigest()
+    owned_directory(root,root/'.dvk/transition-cleanup')
+    json_write(root/'.dvk/transition-cleanup'/(key+'.json'),dict(format=1,root=str(root),caller=str(caller),folder=str(candidate),
+               files={'main.py':hashlib.sha256(stub.encode()).hexdigest(),'DVK_TRANSITION_STUB.json':digest(candidate/'DVK_TRANSITION_STUB.json')}))
     atomic(candidate/'main.py',stub.encode())
     return code
 
