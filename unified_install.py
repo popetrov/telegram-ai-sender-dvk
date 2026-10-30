@@ -449,6 +449,37 @@ def latest_legacy_state(source):
     raise ValueError('Legacy pointer chain too long')
 
 
+def compatibility_caller(source,candidate):
+    """Derive the old launcher from its requested destination, prove ownership.
+
+    Frozen old bootstraps do not provide DVK_LAUNCHER_ROOT. Environment text
+    cannot authorise an installation; existing paths, identity and pointer
+    ancestry must agree. Resolve the existing stem separately for Windows8.3.
+    """
+    source,candidate=Path(source).resolve(),Path(candidate).resolve()
+    match=re.fullmatch(r'(.+)_dvk_([0-9a-f]{32})',candidate.name)
+    if not match:raise ValueError('Unsafe compatibility destination')
+    stem=candidate.parent/match[1]
+    if linked(stem) or not stem.is_dir():raise ValueError('Compatibility launcher missing')
+    caller=stem.resolve()
+    if caller.parent!=candidate.parent or read_identity(caller)!=read_identity(source):raise ValueError('Compatibility launcher identity mismatch')
+    current=caller;seen=set()
+    for _ in range(1000):
+        if current==source:return caller
+        if current in seen:raise ValueError('Cycle in compatibility ownership')
+        seen.add(current)
+        pointer=current/'data/active-installation.json'
+        if linked(pointer) or not pointer.is_file():break
+        record=json.loads(pointer.read_text('utf-8'));name=record.get('directory','')
+        child=re.fullmatch(r'(.+)_dvk_([0-9a-f]{32})',name) if isinstance(name,str) else None
+        if (record.get('format')!=1 or child is None or Path(name).name!=name
+                or (current.parent/child[1]).resolve()!=current):break
+        target=current.parent/name
+        if linked(target) or not target.is_dir() or read_identity(target)!=read_identity(source):break
+        current=target.resolve()
+    raise ValueError('Launcher does not own source installation')
+
+
 def prepare_legacy(source,candidate,payload,*,check=verify_environment):
     """Adapter called by the OLD updater while it still holds its locks.
 
@@ -456,13 +487,10 @@ def prepare_legacy(source,candidate,payload,*,check=verify_environment):
     sibling path; it removes itself after the old parent finishes launching.
     """
     source,candidate=Path(source).resolve(),Path(candidate).resolve()
-    caller=Path(os.environ.get('DVK_LAUNCHER_ROOT',str(source))).resolve()
-    from startup_update import active_installation
-    if caller!=source and active_installation(caller)!=source:raise ValueError('Launcher does not own source installation')
+    caller=compatibility_caller(source,candidate)
     requested_source=source
     source=latest_legacy_state(source)
     root=canonical_root(caller,source)
-    if candidate.parent!=caller.parent or not re.fullmatch(re.escape(caller.name)+'_dvk_[0-9a-f]{32}',candidate.name):raise ValueError('Unsafe compatibility destination')
     if candidate.exists():raise ValueError('Compatibility destination already exists')
     with contextlib.ExitStack() as locks:
         if source!=requested_source:locks.enter_context(FileLock(source/'data/sender.lock'))
