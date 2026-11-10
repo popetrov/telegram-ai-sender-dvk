@@ -53,9 +53,10 @@ async def resolve(client, job):
     from telethon.tl.functions.contacts import ResolveUsernameRequest
 
     result = await client(ResolveUsernameRequest(job['username']))
-    if getattr(result.peer, 'user_id', None) != job['peer']:
+    peer = getattr(result.peer, 'user_id', None)
+    if type(peer) is not int or (job.get('peer') is not None and peer != job['peer']):
         return None
-    return next((user for user in result.users if user.id == job['peer']
+    return next((user for user in result.users if user.id == peer
                  and not getattr(user, 'bot', False) and not getattr(user, 'deleted', False)), None)
 
 
@@ -110,7 +111,7 @@ def reserve(job):
         return message_id
 
 
-async def dispatch(client, job):
+async def dispatch(client, job, *, automatic=False):
     from database import get_connection, update_message_status
     from dialogue_store import ContactOptOutError
     from forensic_trace import origin
@@ -119,18 +120,21 @@ async def dispatch(client, job):
     entity = await resolve(client, job)
     if entity is None:
         return 'пропущено, Telegram-аккаунт не совпал'
+    local_job = {**job, 'peer': entity.id}
     try:
-        allowed_contact(job)
+        allowed_contact(local_job)
         with get_connection() as connection:
-            local_client(connection, job)
+            local_client(connection, local_job)
     except (ContactOptOutError, ValueError):
         return 'пропущено, проверьте контакт'
-    permit = await center(client, 'claim', job)
+    permit = await center(client, 'claim_auto' if automatic else 'claim', job)
     if not permit.get('ok') or permit.get('job') != job['id']:
         return 'пропущено, Битрикс не подтвердил отправку или сообщение уже обработано'
-    guard()
-    allowed_contact(job)
-    message_id = reserve(job)
+    grant = guard()
+    if automatic and grant.get('bitrix_followup_auto') is not True:
+        raise AccessDenied('Daily send no longer assigned')
+    allowed_contact(local_job)
+    message_id = reserve(local_job)
     if message_id is None:
         return 'уже обработано'
     try:
@@ -180,10 +184,14 @@ async def show(application, client, *, startup=False):
     if startup:
         await access_runtime.wait_initial_access()
     try:
-        authorized()
+        grant = authorized()
     except AccessDenied:
         return
     account = access_runtime.account_id
+    if grant.get('bitrix_followup_auto') is True:
+        if not startup:
+            await application.bot.send_message(account, 'Очередь из Битрикса обрабатывается автоматически.')
+        return
     application.bot_data.pop(PREVIEW, None)
     try:
         guard()

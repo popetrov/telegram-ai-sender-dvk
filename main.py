@@ -187,6 +187,7 @@ async def main():
     safety_task = None
     monitor_task = None
     reporting_task = None
+    bitrix_auto_task = None
 
     try:
         if Path('.dvk/layout.json').is_file():
@@ -248,10 +249,13 @@ async def main():
 
         from bitrix_followup_sender import show as show_bitrix_followup
         bot.create_task(show_bitrix_followup(bot, client, startup=True), name="bitrix-followup-preview")
+        from daily_sender import run as run_daily_followups
+        bitrix_auto_task = asyncio.create_task(run_daily_followups(bot, client), name="bitrix-daily-send")
 
         try:
             await wait_for_safe_update(bot)
         finally:
+            await access_runtime.stop(bitrix_auto_task)
             if bot.updater.running:
                 await bot.updater.stop()
 
