@@ -347,7 +347,15 @@ def run(root,*,updates=True,discover=None,check=verify_environment,launch_fn=lau
             from startup_update import latest_bundle,unpack_bundle
             import tempfile
             try:
-                release=(discover or latest_bundle)((active/'version.txt').read_text('utf-8-sig').strip())
+                current=(active/'version.txt').read_text('utf-8-sig').strip()
+                channel=root/'data/dvk-finance-update-channel'
+                if discover is not None:
+                    release=discover(current)
+                elif channel.exists() or channel.is_symlink():
+                    from finance_update import discover as finance_release
+                    release=finance_release(root,active,current,record['manager_id'])
+                else:
+                    release=latest_bundle(current)
                 if release:
                     tag,raw=release
                     with FileLock(root/'data/sender.lock'),tempfile.TemporaryDirectory(prefix='dvk-unified-') as tmp:

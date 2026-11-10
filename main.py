@@ -246,6 +246,9 @@ async def main():
             except Exception:
                 pass
 
+        from bitrix_followup_sender import show as show_bitrix_followup
+        bot.create_task(show_bitrix_followup(bot, client, startup=True), name="bitrix-followup-preview")
+
         try:
             await wait_for_safe_update(bot)
         finally:

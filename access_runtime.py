@@ -13,6 +13,7 @@ from access_lease import AccessDenied, LeaseStore, POLL_SECONDS, canonical
 
 _store = None
 account_id = None
+_initial_access = None
 _log = logging.getLogger(__name__)
 transport_lock = asyncio.Lock()
 
@@ -89,8 +90,17 @@ async def refresh(client, authority, store):
                     _log.warning("Invalid central access response; cached lease unchanged")
 
 
+async def wait_initial_access():
+    if _initial_access is not None:
+        try:
+            await asyncio.wait_for(_initial_access.wait(), 45)
+        except TimeoutError:
+            pass
+
+
 async def start(client):
-    global _store, account_id
+    global _store, account_id, _initial_access
+    _initial_access = asyncio.Event()
     authority = os.getenv("ACCESS_BOT_USERNAME", "").strip().lstrip("@")
     public = os.getenv("ACCESS_PUBLIC_KEY", "").strip()
     manager = os.getenv("MANAGER_ID", "").strip()
@@ -115,6 +125,8 @@ async def start(client):
             except Exception as exc:
                 _log.warning("Central access check unavailable (%s); using cached permission",
                              type(exc).__name__)
+            finally:
+                _initial_access.set()
             await asyncio.sleep(max(0, POLL_SECONDS - (time.monotonic() - started)))
 
     task = asyncio.create_task(poll(), name="central-access")

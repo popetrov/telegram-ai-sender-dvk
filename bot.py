@@ -2345,4 +2345,6 @@ def create_bot() -> Application:
     register_menu(application,role='sender',allowed=lambda u:u.effective_chat.type=='private' and user_is_allowed(u))
     from installation_ui import register as register_installation
     register_installation(application,is_controller)
+    from bitrix_followup_sender import register as register_bitrix_followup
+    register_bitrix_followup(application)
     return application
