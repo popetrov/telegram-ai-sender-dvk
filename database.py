@@ -1241,6 +1241,18 @@ def get_all_prepared_messages() -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def discard_prepared_drafts(ids: tuple[int, ...]) -> int:
+    with get_connection() as connection:
+        manager_id = _verify_manager_id(connection)
+        before = connection.total_changes
+        connection.executemany(
+            "UPDATE prepared_messages SET status='discarded' "
+            "WHERE manager_id=? AND id=? AND status='prepared'",
+            ((manager_id, draft_id) for draft_id in ids),
+        )
+        return connection.total_changes - before
+
+
 def get_pending_prepared_messages() -> list[dict]:
     """
     Возвращает prepared, явные PeerFloodError и подтверждённые
