@@ -815,6 +815,54 @@ async def start_command(
     )
 
 
+async def discard_drafts_command(update, context):
+    if not user_is_allowed(update):
+        return
+    context.user_data.pop('discard_drafts', None)
+    if queue_is_active(context):
+        await update.effective_message.reply_text('Сначала отмените активную очередь.')
+        return
+    rows = get_pending_prepared_messages()
+    ids = tuple(row['id'] for row in rows if row['status'] == 'prepared')
+    if not ids:
+        await update.effective_message.reply_text('Готовых черновиков для очистки нет.')
+        return
+    from secrets import token_hex
+    token = token_hex(8)
+    context.user_data['discard_drafts'] = (token, ids)
+    await update.effective_message.reply_text(
+        f'Убрать из восстановления черновиков: {len(ids)}? '
+        f'Записей с ошибкой для отдельной проверки: {len(rows) - len(ids)}.',
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton('Убрать черновики', callback_data='discard_drafts:' + token),
+            InlineKeyboardButton('Оставить', callback_data='discard_drafts:' + token + ':keep'),
+        ]]),
+    )
+
+
+async def discard_drafts_callback(update, context):
+    query = update.callback_query
+    if not user_is_allowed(update):
+        await query.answer('Нет доступа.', show_alert=True)
+        return
+    _, token, *keep = query.data.split(':')
+    pending = context.user_data.get('discard_drafts')
+    if not pending or pending[0] != token:
+        await query.answer('Запрос устарел.', show_alert=True)
+        return
+    if queue_is_active(context):
+        await query.answer('Сначала отмените активную очередь.', show_alert=True)
+        return
+    context.user_data.pop('discard_drafts', None)
+    if keep:
+        result = 'Черновики оставлены.'
+    else:
+        from database import discard_prepared_drafts
+        result = f'Убрано из восстановления: {discard_prepared_drafts(pending[1])}.'
+    await query.answer()
+    await query.edit_message_text(result)
+
+
 async def cancel_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2296,6 +2344,10 @@ def create_bot() -> Application:
         config.BOT_TOKEN
     ).build()
 
+    application.add_handler(CommandHandler("discard_drafts", discard_drafts_command))
+    application.add_handler(CallbackQueryHandler(
+        discard_drafts_callback, pattern=r'^discard_drafts:[0-9a-f]{16}(:keep)?$',
+    ))
     application.add_handler(CommandHandler("access", access_status_command))
     application.add_handler(CommandHandler('retry_research',retry_research_command))
     application.add_handler(CommandHandler('spam_reset', spam_reset_command))

@@ -122,6 +122,10 @@ async def start(client):
             try:
                 async with transport_lock:
                     await refresh(client, authority, _store)
+                from business_updates import sync_packages
+                errors=await asyncio.to_thread(sync_packages,Path('.'),_store)
+                for business,error in errors:
+                    _log.warning('Бизнес-пакет %s ожидает загрузки (%s)',business,error)
             except Exception as exc:
                 _log.warning("Central access check unavailable (%s); using cached permission",
                              type(exc).__name__)

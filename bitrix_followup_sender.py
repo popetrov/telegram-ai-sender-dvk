@@ -137,6 +137,8 @@ async def dispatch(client, job, *, automatic=False):
     message_id = reserve(local_job)
     if message_id is None:
         return 'уже обработано'
+    from finance_priority import begin_external_send, finish_external_send
+    receipt = begin_external_send(entity.id)
     try:
         with origin('campaign', 'messages', message_id):
             sent = await client.send_message(entity, job['text'], parse_mode=None)
@@ -146,6 +148,8 @@ async def dispatch(client, job, *, automatic=False):
     except (Exception, asyncio.CancelledError) as exc:
         update_message_status(message_id, 'uncertain', send_error=type(exc).__name__)
         raise
+    finally:
+        finish_external_send(entity.id, receipt)
     return 'отправлено'
 
 

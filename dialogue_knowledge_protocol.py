@@ -94,7 +94,10 @@ class KnowledgeBroker:
             raise PermissionError('Unknown manager')
         key=(manager['company_id'],payload['business_id'])
         if self.allowed_accounts is not None and account_id not in self.allowed_accounts.get(key,set()):
-            raise PermissionError('This account is not enabled for the knowledge pilot')
+            from business_updates import CompanyPackages
+            routes = CompanyPackages(self.authority).routes(account_id, payload['subject'])
+            if not any((r['company_id'], r['business_id']) == key for r in routes):
+                raise PermissionError('Нет назначения базы знаний для этого менеджера')
         provider=self.providers.get(key)
         if provider is None or payload['product'] not in provider.products:
             raise PermissionError('Knowledge business binding denied')
@@ -105,8 +108,16 @@ class KnowledgeBroker:
         validate_request(payload,account_id,clock=self.clock)
         try:
             provider=self.binding(payload,account_id)
-            answer=await provider.lookup(business_id=payload['business_id'],product=payload['product'],
-                                         question=payload['question'],request_id=payload['request_id'])
+            if payload['question'] == '__DVK_PRIMARY_METHODS_V1__':
+                sources = getattr(self, 'methodology', {}).get(payload['business_id'], [])
+                if not sources:
+                    raise KnowledgeUnavailable('Методики не настроены в центре.')
+                answer = KnowledgeAnswer('Основные методики ДВК Финанс',
+                    tuple(Evidence(s['role'], s['file_id'], s['filename'], s['text']) for s in sources),
+                    payload['request_id'])
+            else:
+                answer=await provider.lookup(business_id=payload['business_id'],product=payload['product'],
+                                             question=payload['question'],request_id=payload['request_id'])
             # Revocation/expiry during an AI call also blocks the result.
             self.binding(payload,account_id)
             return response_packet(payload,signing_key=self.signing_key,answer=answer,clock=self.clock)

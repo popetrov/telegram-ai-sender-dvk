@@ -36,6 +36,26 @@ class KnowledgeAnswer:
     request_id: str
 
 
+def public_document_answer(answer,policy,question):
+    """Use only configured, bounded document-list sections preceding internal content."""
+    if not any(p.casefold() in question.casefold() for p in policy.document_questions):return None
+    from dataclasses import replace
+    permitted=[]
+    for evidence in answer.evidence:
+        lower=evidence.text.casefold()
+        boundary=min([lower.find(p.casefold()) for p in policy.restricted_knowledge_markers if p.casefold() in lower] or [len(lower)])
+        for section in policy.public_document_sections:
+            start=lower.find(section['start'].casefold())
+            end=lower.find(section['end'].casefold(),start) if start>=0 else -1
+            if 0<=start<end<=boundary:
+                permitted.append(replace(evidence,text=evidence.text[start:end].strip()))
+    if not permitted:return None
+    return KnowledgeAnswer('Ниже только опубликованный в источнике начальный список документов. '
+        'Это не подтверждение одобрения, доступности внутренних продуктов или обязательности всего пакета для этой компании. '
+        'Не запрашивай отправку паспортов прямо сейчас; сначала объясни этап и предложи уточнение безопасного способа передачи.',
+        tuple(permitted),answer.request_id)
+
+
 ANSWER_SCHEMA={
     'type':'object','additionalProperties':False,
     'properties':{

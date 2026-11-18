@@ -25,7 +25,7 @@ def canonical(payload):
                       ensure_ascii=True).encode("ascii")
 
 
-def issue(private_key, *, subject, nonce, allowed, now=None, subscription_end=None,company_id=None,reporting_schema=None):
+def issue(private_key, *, subject, nonce, allowed, now=None, subscription_end=None,company_id=None,reporting_schema=None,business_packages=None,business_packages_disabled=None):
     """Run on the authority only, after looking up the current permission."""
     now = int(time.time() if now is None else now)
     if type(allowed) is not bool or not subject or not nonce:
@@ -38,6 +38,9 @@ def issue(private_key, *, subject, nonce, allowed, now=None, subscription_end=No
     payload = dict(version=1, subject=subject, nonce=nonce, allowed=allowed,
                    issued_at=now, expires_at=end)
     if company_id is not None:payload['company_id']=company_id
+    if business_packages is not None:
+        payload['business_packages']=business_packages
+        payload['business_packages_disabled']=business_packages_disabled or []
     if reporting_schema is not None:payload['reporting_schema']=reporting_schema
     return dict(payload=payload, signature=base64.b64encode(
         private_key.sign(canonical(payload))).decode("ascii"))

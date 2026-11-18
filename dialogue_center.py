@@ -51,4 +51,14 @@ def load_broker(state,authority,signing_key,encryption_key):
         clients.append(client)
         providers[binding]=VectorKnowledge(client,business_id=row['business_id'],products=row['products'],
                                            vector_store_id=row['vector_store_id'],model=row.get('model','gpt-4.1'))
-    return KnowledgeBroker(authority,providers,signing_key,encryption_key,allowed_accounts=allowed),clients
+    broker = KnowledgeBroker(authority,providers,signing_key,encryption_key,allowed_accounts=allowed)
+    method_path = Path(state) / 'sales-methodology.json'
+    broker.methodology = {}
+    if method_path.exists():
+        if method_path.is_symlink() or method_path.stat().st_size > 512000:
+            raise ValueError('Небезопасный файл методик центра.')
+        methods = json.loads(method_path.read_text('utf-8-sig'))
+        if methods.get('format') != 1 or methods.get('business_id') != 'dvk_finance':
+            raise ValueError('Неверная область методик центра.')
+        broker.methodology['dvk_finance'] = methods['sources']
+    return broker, clients

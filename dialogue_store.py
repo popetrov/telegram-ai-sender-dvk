@@ -1,3 +1,4 @@
+from finance_scope import account_allowed, thread_allowed
 """Durable dialogue state. No network, automatic enrollment, AI or sending.
 
 Kept separate from first-contact message/research records. Runtime enrollment
@@ -10,7 +11,7 @@ import time
 import uuid
 
 STATES = {'waiting', 'engaged', 'later', 'human', 'opt_out', 'closed'}
-ACTION_KINDS = {'reply', 'reminder', 'opt_out_ack'}
+ACTION_KINDS = {'reply', 'reminder', 'opt_out_ack', 'calendar'}
 
 
 class StaleDialogue(ValueError):
@@ -31,6 +32,12 @@ def require_contact_allowed(path, *, manager_id, peer_id):
     db=sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=10)
     try:
         exists=db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dialogue_threads'").fetchone()
+        columns={r[1] for r in db.execute('PRAGMA table_info(dialogue_threads)')} if exists else set()
+        if {'seller_enabled','mode','resume_pending','outgoing_allowed'}<=columns:
+            pilot=db.execute('SELECT seller_enabled,mode,resume_pending,outgoing_allowed FROM dialogue_threads '
+                             'WHERE manager_id=? AND peer_id=?',(manager_id,peer_id)).fetchone()
+            if pilot and pilot[0] and (pilot[1] in {'copilot','off','paused_until'} or pilot[2] or not pilot[3]):
+                raise ContactOptOutError('Автоматическая отправка этому клиенту приостановлена режимом диалога. Проверьте /dialogues.')
         stopped=db.execute("SELECT state FROM dialogue_threads WHERE manager_id=? AND peer_id=? AND state IN ('opt_out','closed')",
                            (manager_id,peer_id)).fetchone() if exists else None
         if stopped:
@@ -85,9 +92,20 @@ class DialogueStore:
                     status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
                     UNIQUE(thread_id,event_key));
             ''')
+            db.execute('BEGIN IMMEDIATE')
             columns={r['name'] for r in db.execute('PRAGMA table_info(dialogue_actions)')}
             if 'sent_at' not in columns:
                 db.execute('ALTER TABLE dialogue_actions ADD COLUMN sent_at INTEGER')
+            from dialogue_seller import initialize as initialize_seller
+            initialize_seller(db)
+            from dialogue_memory import initialize as initialize_memory
+            initialize_memory(db)
+            from dialogue_applications import initialize as initialize_applications
+            initialize_applications(db)
+            from dialogue_records import initialize as initialize_records
+            initialize_records(db)
+            from dialogue_case_learning import initialize as initialize_case_learning
+            initialize_case_learning(db)
             if sync:
                 from sync_data import initialize,enqueue,DIALOGUE_TABLES
                 initialize(db)
@@ -98,7 +116,13 @@ class DialogueStore:
                     db.execute("INSERT INTO local_settings VALUES ('sync_dialogues_initialized','1',datetime('now'))")
 
     def enroll(self, *, company_id, business_id, manager_id, account_id, peer_id,
-               product, first_message_id, first_sent_at):
+               product, first_message_id, first_sent_at, anchor_kind='outgoing'):
+        if anchor_kind not in {'outgoing','incoming'}:
+            raise ValueError('Invalid dialogue history anchor')
+        if anchor_kind=='incoming':
+            from dialogue_seller import OWNER_ACCOUNT_ID
+            if not account_allowed(account_id):
+                raise PermissionError('Входящий пилот разрешён только владельцу.')
         for value in (company_id, business_id, manager_id, product):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError('Missing trusted dialogue identity')
@@ -112,13 +136,13 @@ class DialogueStore:
                              (account_id,peer_id)).fetchone()
             if row:
                 fields = ('company_id','business_id','manager_id','account_id','peer_id','product','first_message_id','first_sent_at')
-                if tuple(row[k] for k in fields) != binding:
+                if tuple(row[k] for k in fields) != binding or row['anchor_kind']!=anchor_kind:
                     raise ValueError('Existing dialogue binding must not change implicitly')
                 return row['id']
             thread_id = uuid.uuid4().hex
             db.execute('''INSERT INTO dialogue_threads
-                (id,company_id,business_id,manager_id,account_id,peer_id,product,first_message_id,first_sent_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)''', (thread_id,*binding,int(self.clock())))
+                (id,company_id,business_id,manager_id,account_id,peer_id,product,first_message_id,first_sent_at,updated_at,anchor_kind)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)''', (thread_id,*binding,int(self.clock()),anchor_kind))
             return thread_id
 
     @staticmethod
@@ -150,10 +174,24 @@ class DialogueStore:
             else:
                 db.execute('INSERT INTO dialogue_messages VALUES (?,?,?,?,?,?)',
                            (thread_id,telegram_id,direction,text,sent_at,source))
+            from dialogue_calendar import on_message_db
+            on_message_db(db,thread,direction=direction,source=source,now=self.clock())
             state = thread['state']
             if source == 'manager' and state not in {'opt_out','closed'}:
                 state = 'human'
                 db.execute("UPDATE dialogue_notices SET status='handled' WHERE thread_id=? AND status IN ('pending','delivered')",(thread_id,))
+                if thread['seller_enabled']:
+                    mode='off' if thread['mode']=='off' else 'copilot'
+                    reason='Вы ответили вручную. Диалог остаётся выключенным.' if mode=='off' else 'Вы ответили клиенту вручную. ИИ остановлен.'
+                    db.execute("UPDATE dialogue_threads SET mode=?,resume_pending=0,paused_until=NULL,control_reason=?,"
+                               'control_epoch=control_epoch+1 WHERE id=?', (mode,reason,thread_id))
+                    from dialogue_seller import event
+                    event(db,thread_id,'manual_takeover',thread['revision']+1,self.clock(),
+                          actor=thread['account_id'],telegram_id=telegram_id)
+                    if thread['mode']!='off' and (thread['mode']!='copilot' or thread['state']!='human'):
+                        db.execute('INSERT INTO dialogue_notices(id,thread_id,event_key,event_type,summary,created_at) VALUES (?,?,?,?,?,?)',
+                            (uuid.uuid4().hex,thread_id,'manual_takeover:'+str(telegram_id),'control',
+                             'Ваш ручной ответ остановил ИИ. Дальше отвечаете вы; вернуть ИИ можно кнопкой.',int(self.clock())))
             db.execute('UPDATE dialogue_threads SET revision=revision+1,state=?,updated_at=? WHERE id=?',
                        (state,int(self.clock()),thread_id))
             db.execute("UPDATE dialogue_actions SET status='cancelled' WHERE thread_id=? AND status='pending'",(thread_id,))
@@ -164,8 +202,8 @@ class DialogueStore:
             thread = self._thread(db,thread_id)
             original = db.execute('SELECT direction FROM dialogue_messages WHERE thread_id=? AND telegram_id=?',
                                   (thread_id,thread['first_message_id'])).fetchone()
-            if original is None or original['direction'] != 'outgoing':
-                raise ValueError('Verified initial outbound message missing from history')
+            if original is None or original['direction'] != thread['anchor_kind']:
+                raise ValueError('Verified initial dialogue message missing from history')
             db.execute('UPDATE dialogue_threads SET history_complete=1 WHERE id=?',(thread_id,))
 
     def snapshot(self, thread_id):
@@ -192,8 +230,13 @@ class DialogueStore:
             thread = self._thread(db,thread_id)
             if thread['revision'] != expected_revision:
                 raise StaleDialogue('History changed during decision')
+            if thread['seller_enabled'] and thread['state']=='human' and state not in {'human','opt_out','closed'}:
+                raise StaleDialogue('Возврат боту требует проверки свежей истории.')
             if thread['state'] == 'opt_out' and state != 'opt_out':
                 raise ValueError('Opt-out requires separate explicit consent before reactivation')
+            if state in {'human','opt_out','closed'}:
+                from dialogue_calendar import cancel_db
+                cancel_db(db,thread_id,self.clock(),'Остановка диалога: '+state)
             db.execute('UPDATE dialogue_threads SET state=?,next_contact_at=?,revision=revision+1,updated_at=? WHERE id=?',
                        (state,next_contact_at,int(self.clock()),thread_id))
             db.execute("UPDATE dialogue_actions SET status='cancelled' WHERE thread_id=? AND status='pending'",(thread_id,))
@@ -206,6 +249,11 @@ class DialogueStore:
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             thread = self._thread(db,thread_id)
+            from dialogue_seller import can_send
+            if not can_send(thread,kind):
+                raise StaleDialogue('Исходящие остановлены режимом или ручным перехватом.')
+            if thread['seller_enabled'] and db.execute("SELECT 1 FROM dialogue_actions WHERE thread_id=? AND status IN ('sending','uncertain')",(thread_id,)).fetchone():
+                raise StaleDialogue('Сначала проверьте результат предыдущей отправки.')
             if thread['revision'] != expected_revision or not thread['history_complete']:
                 raise StaleDialogue('History incomplete or changed during generation')
             allowed = thread['state'] in {'waiting','engaged','later'}
@@ -231,6 +279,13 @@ class DialogueStore:
             if action is None or action['status']!='pending' or action['due_at']>self.clock():
                 raise ValueError('Action unavailable or not due')
             thread=self._thread(db,action['thread_id'])
+            from dialogue_calendar import guard_action
+            guard_action(db,thread,action,self.clock())
+            from dialogue_seller import can_send
+            if not can_send(thread,action['kind']):
+                raise StaleDialogue('Исходящие остановлены режимом или ручным перехватом.')
+            if thread['seller_enabled'] and db.execute("SELECT 1 FROM dialogue_actions WHERE thread_id=? AND status IN ('sending','uncertain')",(action['thread_id'],)).fetchone():
+                raise StaleDialogue('Сначала проверьте результат предыдущей отправки.')
             allowed = (thread['state']=='opt_out' if action['kind']=='opt_out_ack'
                        else thread['state'] in {'waiting','engaged','later'})
             if not allowed or not thread['history_complete'] or thread['revision']!=action['revision']:
@@ -249,7 +304,7 @@ class DialogueStore:
             if changed!=1:
                 raise ValueError('Action was not reserved or already completed')
 
-    def handoff(self, thread_id, *, event_key, event_type, summary, pause, expected_revision):
+    def handoff(self, thread_id, *, event_key, event_type, summary, pause, expected_revision,reason=None):
         """Atomically save a manager notice and, if required, pause the dialogue."""
         if (not isinstance(event_key,str) or not event_key or not isinstance(event_type,str) or not event_type
                 or not isinstance(summary,str) or not summary.strip() or len(summary)>3000 or type(pause) is not bool):
@@ -267,7 +322,15 @@ class DialogueStore:
             notice_id=uuid.uuid4().hex
             db.execute('INSERT INTO dialogue_notices(id,thread_id,event_key,event_type,summary,created_at) VALUES (?,?,?,?,?,?)',
                        (notice_id,thread_id,event_key,event_type,summary,int(self.clock())))
+            if pause:
+                from dialogue_calendar import cancel_db
+                cancel_db(db,thread_id,self.clock(),'Передача МОП: '+event_type)
             if pause and thread['state'] not in {'opt_out','closed'}:
+                if thread['seller_enabled']:
+                    db.execute("UPDATE dialogue_threads SET mode='copilot',resume_pending=0,paused_until=NULL,control_reason=?,"
+                               'control_epoch=control_epoch+1 WHERE id=?', ((reason or summary)[:250],thread_id))
+                    from dialogue_seller import event
+                    event(db,thread_id,'handoff_paused',thread['revision']+1,self.clock(),event_type=event_type,reason=(reason or summary)[:250])
                 db.execute("UPDATE dialogue_threads SET state='human',next_contact_at=NULL,revision=revision+1,updated_at=? WHERE id=?",
                            (int(self.clock()),thread_id))
                 db.execute("UPDATE dialogue_actions SET status='cancelled' WHERE thread_id=? AND status='pending'",(thread_id,))
@@ -276,6 +339,10 @@ class DialogueStore:
     def manager_control(self, thread_id, *, actor_account_id, manager_id, command, expected_revision):
         if command not in {'pause','resume'}:
             raise ValueError('Unknown manager control')
+        if self.thread(thread_id)['seller_enabled']:
+            from dialogue_seller import SellerControls
+            return SellerControls(self).set_mode(thread_id,'copilot' if command=='pause' else 'active_negotiation',
+                actor=actor_account_id,manager=manager_id,revision=expected_revision)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             thread=self._thread(db,thread_id)
@@ -294,12 +361,19 @@ class DialogueStore:
     def pending_notices(self, account_id):
         with self.connection() as db:
             return [dict(r) for r in db.execute('''SELECT n.*,t.account_id,t.manager_id,t.peer_id,t.product,
-                t.revision,t.state FROM dialogue_notices n JOIN dialogue_threads t ON t.id=n.thread_id
+                t.revision,t.state,t.seller_enabled,t.mode,t.resume_pending FROM dialogue_notices n JOIN dialogue_threads t ON t.id=n.thread_id
                 WHERE t.account_id=? AND n.status='pending' ORDER BY n.created_at,n.id''',(account_id,))]
 
     def already_notified(self,thread_id,event_type):
         with self.connection() as db:
             return db.execute("SELECT 1 FROM dialogue_notices WHERE thread_id=? AND event_type=? AND status IN ('pending','delivered')",(thread_id,event_type)).fetchone() is not None
+
+    def handoff_acknowledged(self,thread_id,event_type,text):
+        """A new Telegram message must not replay an already delivered handoff acknowledgement."""
+        if event_type not in {'call','documents'}:raise ValueError('Invalid acknowledgement type')
+        with self.connection() as db:
+            return db.execute("SELECT 1 FROM dialogue_actions WHERE thread_id=? AND status IN ('sending','sent','uncertain') "
+                'AND (action_key LIKE ? OR text=?) LIMIT 1',(thread_id,'ack:'+event_type+':%',text)).fetchone() is not None
 
     def acknowledge_notice(self, notice_id, *, account_id):
         with self.connection() as db:
@@ -360,7 +434,19 @@ class DialogueStore:
     def outgoing_text(self,thread_id,telegram_id):
         with self.connection() as db:
             row=db.execute("SELECT text FROM dialogue_actions WHERE thread_id=? AND status='sent' AND telegram_id=?",(thread_id,telegram_id)).fetchone()
-            return row[0] if row else None
+            if row:
+                return row[0]
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='bitrix_followup_dispatch'").fetchone():
+                thread = self._thread(db, thread_id)
+                row = db.execute(
+                    "SELECT m.text FROM bitrix_followup_dispatch b JOIN messages m ON m.id=b.message_id "
+                    "JOIN clients c ON c.id=m.client_id WHERE m.telegram_message_id=? "
+                    "AND m.status='sent' AND c.manager_id=? AND c.telegram_id=?",
+                    (telegram_id, thread['manager_id'], thread['peer_id']),
+                ).fetchone()
+                if row:
+                    return row[0]
+            return None
 
     def unresolved_actions(self,thread_id):
         with self.connection() as db:
@@ -374,4 +460,4 @@ class DialogueStore:
                                (thread['manager_id'],thread['peer_id'],thread['product'])).fetchone()
                 if row:
                     return ' '.join(v for v in (row['full_name'],('@'+row['username'].lstrip('@')) if row['username'] else '') if v)
-            return 'Telegram ID '+str(thread['peer_id'])
+            return '@'+thread['peer_username'] if thread['peer_username'] else 'Telegram ID '+str(thread['peer_id'])
