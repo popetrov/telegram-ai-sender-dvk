@@ -147,8 +147,11 @@ class SellerControls:
                     db.execute('UPDATE dialogue_threads SET processed_incoming_id=MIN(processed_incoming_id,?),resume_turn_id=? WHERE id=?',
                                (latest['telegram_id']-1,latest['telegram_id'],thread_id))
             if not unanswered:db.execute('UPDATE dialogue_threads SET resume_turn_id=0 WHERE id=?',(thread_id,))
-            db.execute("UPDATE dialogue_threads SET state='engaged',resume_pending=0,control_reason='Менеджер явно вернул диалог ИИ; переписка проверена.',revision=revision+1,updated_at=? WHERE id=?",
-                       (int(self.store.clock()), thread_id))
+            reason=('Ошибка календаря исправлена; свежая переписка проверена.'
+                    if t['control_reason'].startswith('Восстановление после ошибки календаря 2.0.45.')
+                    else 'Менеджер явно вернул диалог ИИ; переписка проверена.')
+            db.execute("UPDATE dialogue_threads SET state='engaged',resume_pending=0,control_reason=?,revision=revision+1,updated_at=? WHERE id=?",
+                       (reason,int(self.store.clock()), thread_id))
             event(db, thread_id, 'resume_reconciled', t['revision']+1, self.store.clock())
             return bool(latest and latest['direction']=='incoming' and (unanswered or latest['telegram_id']>t['processed_incoming_id']))
 

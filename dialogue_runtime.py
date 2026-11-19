@@ -795,6 +795,9 @@ class SelectedQueueRuntime:
         async with worker.lock:
             require_finance_access();bot.require_send_cooldown_finished()
             if getattr(self,'settings',{}).get('seller_stage1'):
+                if self.settings.get('finance_managed'):
+                    from finance_recovery import recover_calendar_failure
+                    recover_calendar_failure(worker.store,worker.thread_id)
                 await worker.reconcile_resume()
                 thread=worker.store.thread(worker.thread_id)
                 if thread['mode'] in {'off','paused_until'}:return

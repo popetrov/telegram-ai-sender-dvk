@@ -22,11 +22,15 @@ async def run(application, client):
 
     await wait_initial_access()
     context = SimpleNamespace(application=application)
+    checked_day = None
+    unavailable = set()
     while True:
         today = datetime.now(ZONE).date().isoformat()
+        if today != checked_day:
+            unavailable.clear()
+            checked_day = today
         try:
             if (sender.authorized().get('bitrix_followup_auto') is True
-                    and (not STATE.is_file() or STATE.read_text('ascii').strip() != today)
                     and not bot.queue_is_active(context)):
                 data = application.bot_data
                 prior = data.get(bot.QUEUE_KEY)
@@ -37,6 +41,8 @@ async def run(application, client):
                     if result.get('ok'):
                         sent = 0
                         for index, job in enumerate(result['jobs']):
+                            if job['id'] in unavailable:
+                                continue
                             if sender.authorized().get('bitrix_followup_auto') is not True:
                                 raise AccessDenied('Daily send no longer assigned')
                             if bot.delivery_gate is not None:
@@ -47,8 +53,10 @@ async def run(application, client):
                                     await asyncio.sleep(bot.SEND_INTERVAL_SECONDS)
                                 status = await sender.dispatch(client, job, automatic=True)
                             sent += status == 'отправлено'
+                            if status == 'пропущено, username недоступен':
+                                unavailable.add(job['id'])
                         atomic(STATE, (today+'\n').encode('ascii'))
-                        if result['jobs']:
+                        if sent:
                             await application.bot.send_message(
                                 account_id, f'Битрикс: отправлено {sent} из {len(result["jobs"])}.')
                 finally:

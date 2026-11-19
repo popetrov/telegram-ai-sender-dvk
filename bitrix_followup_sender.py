@@ -117,7 +117,13 @@ async def dispatch(client, job, *, automatic=False):
     from forensic_trace import origin
 
     guard()
-    entity = await resolve(client, job)
+    from telethon.errors import UsernameNotOccupiedError, UsernameInvalidError
+    try:
+        entity = await resolve(client, job)
+    except (UsernameNotOccupiedError, UsernameInvalidError):
+        # This is a resolution failure, before claim/reservation/send. Other jobs may proceed.
+        log.warning('Daily contact skipped before send (invalid username)')
+        return 'пропущено, username недоступен'
     if entity is None:
         return 'пропущено, Telegram-аккаунт не совпал'
     local_job = {**job, 'peer': entity.id}

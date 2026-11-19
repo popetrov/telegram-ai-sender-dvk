@@ -18,6 +18,7 @@ OPEN=('proposed','scheduled','preparing','queued')
 
 
 def initialize(store):
+ ensure_audit_table(store)
  with store.connection() as db:
   db.executescript('''CREATE TABLE IF NOT EXISTS seller_warm_cohorts (
    thread_id TEXT PRIMARY KEY,category TEXT NOT NULL,status TEXT NOT NULL,
@@ -488,13 +489,19 @@ def activate_reviewed_plan(store,plan,selected_peers,*,actor,manager):
 def resume_after_reply(store,tid,settings):
  """Owner-approved policy: restart the proper interval after a handled conversation turn."""
  if not settings.get('stage3_verified_base') or not settings.get('stage3_live_enabled'):return
+ initialize(store)
  t=store.thread(tid)
  if t['state']!='engaged' or t['mode'] not in {'active_negotiation','nurture','silent'} or not can_send(t):return
  with store.connection() as db:
   enabled=db.execute("SELECT value FROM seller_calendar_meta WHERE key='live_enabled'").fetchone()
   if not enabled or enabled[0]!='true':return
   a=db.execute("SELECT disposition FROM seller_history_audit WHERE thread_id=? AND verified=1",(tid,)).fetchone()
-  if not a or a[0] not in {'conversation','silent','agreed'}:return
+  if settings.get('finance_managed'):
+   # Managed enrollment verifies actual Telegram history before assigning a cohort.
+   # A private WORK audit is not a prerequisite on another manager's fresh database.
+   if not t['history_complete']:return
+   if a and a[0] not in {'conversation','silent','agreed'}:return
+  elif not a or a[0] not in {'conversation','silent','agreed'}:return
   cohort=db.execute('SELECT * FROM seller_warm_cohorts WHERE thread_id=?',(tid,)).fetchone()
   if not cohort or cohort['status']!='paused':return
   if db.execute("SELECT 1 FROM dialogue_actions WHERE thread_id=? AND status IN ('pending','sending','uncertain')",(tid,)).fetchone():return
