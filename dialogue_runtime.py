@@ -195,6 +195,8 @@ class DialogueRuntime:
                       seller_memory=self.policy.seller_memory,seller_applications=self.policy.seller_applications,case_learning=self.policy.case_learning,test_context_start_id=round_start,primary_methodology=methodology,methodology_focus_rules=self.policy.methodology_focus_rules,complete_agreements=self.policy.complete_agreements,
                       usage_recorder=(lambda **values:record_usage(self.store,self.thread_id,**values))
                           if settings.get('seller_stage1') else None)
+        from dialogue_sender import resolve as sender_profile
+        ai.sender_provider=lambda:sender_profile(self.client,self.account_id)
         self.engine=DialogueEngine(self.store,policy,analyst=ai,writer=ai,knowledge=self.remote,
                                    require_access=require_finance_access)
         self.engine.calendar_settings={**settings,'stage3_live_enabled':bool(settings.get('stage3_live_enabled') and (not settings.get('stage3_test_peer_id') or settings.get('peer_id')==settings['stage3_test_peer_id']))}

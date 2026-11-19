@@ -195,6 +195,11 @@ class DialogueAI:
             raise KnowledgeUnavailable('Invalid structured dialogue decision') from None
 
     async def compose(self, *, thread, history, decision, knowledge, stage):
+        sender=None
+        if getattr(self,'sender_provider',None) is not None:
+            sender=await self.sender_provider()
+            if sender['account_id']!=thread['account_id']:
+                raise KnowledgeUnavailable('Draft sender does not match conversation account')
         history=self._round_history(history)
         context=await self.context(history,thread_id=thread.get('id'))
         payload=dict(product=thread['product'],context=context,
@@ -220,7 +225,14 @@ class DialogueAI:
             instructions+=' Потребность сохраняется, отрабатывать нужно возражение против конкретного варианта. Не предлагай новые условия, банки или продукты без источника, не повторяй отвергнутое предложение. Прочитай причину в предыдущих репликах: если человек уже сказал, что условия неправдоподобны, НЕ спрашивай снова «что не подошло» и не перечисляй догадки. Признай, что прежнее предложение не подтверждено для его компании, и предложи следующий полезный шаг по задаче, уточнив один ещё неизвестный существенный параметр. Только если причина действительно неизвестна, спроси о ней. Без пустой подводки «Понял ваш ответ» и обещания одобрения. Фактический ответ по банковским условиям потребует отдельного обращения к базе знаний.'
         if isinstance(stage,dict) and stage.get('calendar'):
             instructions+=' Это согласованное плановое касание по календарю, а не ответ на старый вопрос. Соблюдай reminder_stage.kind: social — поддержать контакт по уместной теме без продажи и выдуманных личных подробностей: не спрашивай, нужна ли гарантия или кредит, не предлагай услугу, лучше один спокойный вопрос о делах компании или проекте из истории; исход старой заявки не обсуждай, если он неизвестен, и не подчёркивай, что не знаешь результата; product — один полезный подтверждённый аспект из knowledge; reconnect — коротко узнать, появились ли новые задачи; final_social — одно короткое доброжелательное завершение серии, без перечня услуг, рекламы и вопроса о потребности; без давления и обещания продолжать писать; agreed — вернуться только к согласованной цели. Обычно одно-два коротких предложения, максимум один вопрос, без анкет и стандартных подводок. Учитывай контекст компании и историю, не повторяй прошлое касание. Не выдумывай события, праздники, новости, ставки и результаты работы МОП. Не заявляй выдачу/отказ без подтверждения. Если нет уместного честного текста, верни пустую строку. Не пытайся заново отвечать на старую реплику вместо цели календарной задачи.'
+        if sender is not None:
+            from dialogue_sender import instructions as sender_rules,invalid_self_presentation
+            payload['sender_identity']=sender
+            instructions+=sender_rules(sender)
         text=await self._response(instructions,payload)
+        if sender is not None and invalid_self_presentation(text,sender):
+            text=await self._response(instructions+' Исправь самопредставление и грамматический род по sender_identity. Сохрани факты и смысл ответа.',payload)
+            if invalid_self_presentation(text,sender):raise KnowledgeUnavailable('Sender identity could not be verified in draft')
         if isinstance(stage,dict) and stage.get('calendar') and stage.get('kind') in {'social','final_social'}:
             product_pitch=r'гарант|кредит|ставк|процент|оформл|заявк|финансирован|предложени.*услуг'
             if stage.get('kind')=='final_social' and not any(m['direction']=='incoming' and m['sent_at']>=thread.get('first_sent_at',0) for m in history):
@@ -244,4 +256,6 @@ class DialogueAI:
             allowed=verified|{n for n in customer if not n.endswith('%')}
             if not numbers(text)<=allowed:
                 raise KnowledgeUnavailable('Reply contains numbers absent from source evidence')
+        if sender is not None and invalid_self_presentation(text,sender):
+            raise KnowledgeUnavailable('Sender identity mismatch after draft refinement')
         return text
