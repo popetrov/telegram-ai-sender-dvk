@@ -344,6 +344,9 @@ def run(root,*,updates=True,discover=None,check=verify_environment,launch_fn=lau
         clean_transition_stubs(root)
         prune(root)
         if updates and not record.get('private_work'):
+            # Complete the fresh signed lease check before either channel discovers a release.
+            from startup_access import before_updates
+            before_updates(root,active,record['manager_id'])
             from startup_update import latest_bundle,unpack_bundle
             import tempfile
             try:

@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 
 RUNTIME = {
+ 'startup_access.py',
  'dialogue_sender.py',
  'finance_recovery.py',
  'finance_priority.py',

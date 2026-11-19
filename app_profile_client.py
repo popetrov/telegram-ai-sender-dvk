@@ -58,9 +58,8 @@ def accept(root,key,packet,request,public,account=None):
     return profile
 
 
-async def direct(root,values,request,public):
-    """Copy only the auth key to memory. Never open a writable manager session."""
-    from safe_telegram import ProtectedTelegramClient as TelegramClient
+def memory_session(root,values):
+    """Copy an existing session read-only; never reauthorize or save the copy."""
     from telethon.sessions import MemorySession
     from telethon.crypto import AuthKey
     name=values.get('SESSION_NAME','telegram_sender')
@@ -70,6 +69,13 @@ async def direct(root,values,request,public):
         row=db.execute('SELECT dc_id,server_address,port,auth_key FROM sessions').fetchone()
     if not row or not row[3]:raise ValueError('No authorized session')
     session=MemorySession();session.set_dc(*row[:3]);session.auth_key=AuthKey(row[3])
+    return session
+
+
+async def direct(root,values,request,public):
+    """Copy only the auth key to memory. Never open a writable manager session."""
+    from safe_telegram import ProtectedTelegramClient as TelegramClient
+    session=memory_session(root,values)
     client=TelegramClient(session,int(values['TELEGRAM_API_ID']),values['TELEGRAM_API_HASH'],
                           connection_retries=0,request_retries=0,flood_sleep_threshold=0)
     try:
