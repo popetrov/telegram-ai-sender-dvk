@@ -19,17 +19,26 @@ async def supported(client):
     from access_runtime import transport_lock
     from safe_telegram import _report_permission
     authority=os.environ['ACCESS_BOT_USERNAME'].lstrip('@');now=time.monotonic()
-    previous=_cached.get(authority)
+    cache_key=(id(client),authority)
+    previous=_cached.get(cache_key)
     if previous and previous[0]>now:return previous[1]
     ok=False
     try:
-        async with asyncio.timeout(4):
+        async with asyncio.timeout(10):
             entity=await client.get_entity(authority);me=await client.get_me()
             if not entity.bot or (entity.username or '').casefold()!=authority.casefold():raise ValueError('Unexpected capability receiver')
             nonce=uuid.uuid4().hex;text='/monitor_caps '+nonce
             key=Ed25519PublicKey.from_public_bytes(base64.b64decode(os.environ['ACCESS_PUBLIC_KEY'],validate=True))
-            async with transport_lock:
-                async with client.conversation(entity,timeout=3,exclusive=True) as conversation:
+        # Waiting behind an authenticated business transfer is not a negative
+        # capability response. In particular, never cache it for five minutes.
+        try:
+            async with asyncio.timeout(10):
+                await transport_lock.acquire()
+        except TimeoutError:
+            return False
+        try:
+            async with asyncio.timeout(15):
+                async with client.conversation(entity,timeout=12,exclusive=True) as conversation:
                     token=_report_permission.set((entity.id,text))
                     try:sent=await conversation.send_message(text,silent=True)
                     finally:_report_permission.reset(token)
@@ -39,8 +48,14 @@ async def supported(client):
                         if not raw.startswith('DVK_MONITOR_CAPS '):continue
                         envelope=json.loads(raw[len('DVK_MONITOR_CAPS '):]);payload=envelope['payload']
                         key.verify(base64.b64decode(envelope['signature'],validate=True),canonical(payload))
+                        if payload.get('nonce') != nonce:
+                            continue
                         ok=payload==dict(protocol='DVK_MONITOR_CAPS_V1',account_id=me.id,nonce=nonce,forensic_v1=True)
                         break
+        finally:
+            transport_lock.release()
     except (Exception,):pass
-    _cached[authority]=(time.monotonic()+300,ok)
+    # Failed network reads are retried promptly; only a verified positive answer
+    # earns the long cache. No permission or Telegram pause is changed here.
+    _cached[cache_key]=(time.monotonic()+(300 if ok else 10),ok)
     return ok

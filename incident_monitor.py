@@ -229,10 +229,24 @@ class Recorder:
         return rows[0] if rows else None
 
     def pending_batch(self, limit=20):
+        if limit <= 0:
+            return []
         with closing(self.connect()) as db:
-            return db.execute("SELECT * FROM monitor_events WHERE acknowledged=0 ORDER BY "
+            # A history investigation must not hide a new startup/heartbeat.
+            # Delivery order is independent of the immutable local hash chain;
+            # every row is retained until its own authenticated receipt arrives.
+            live = db.execute("SELECT * FROM monitor_events WHERE acknowledged=0 AND ("
+                              "json_extract(data,'$.kind') IN ('startup','heartbeat') OR "
+                              "json_extract(data,'$.source')='finance_warmup_status') "
+                              "ORDER BY sequence DESC LIMIT ?",
+                              (min(4, max(1, limit//4)) if limit > 1 else 0,)).fetchall()
+            exclude = 'sequence NOT IN (' + ','.join('?' for _ in live) + ')' if live else '1'
+            rest = db.execute("SELECT * FROM monitor_events WHERE acknowledged=0 AND "
+                              + exclude + " ORDER BY "
                               "CASE WHEN json_extract(data,'$.kind') IN ('telegram_deleted','history_missing','request_blocked') "
-                              'THEN 0 ELSE 1 END,sequence LIMIT ?', (limit,)).fetchall()
+                              'THEN 0 ELSE 1 END,sequence LIMIT ?',
+                              (*[row['sequence'] for row in live], max(0, limit-len(live)))).fetchall()
+            return live + rest
 
     def acknowledge(self, event_id):
         with closing(self.connect()) as db, db:
@@ -438,7 +452,44 @@ async def capture_ttl(client, peer_id=None, notify=None, recorder=None):
     return period
 
 
+async def deliver(client):
+    """Live delivery never waits for history/TTL inspection to finish."""
+    heartbeat_at = 0
+    while True:
+        now = time.monotonic()
+        current = bool(client.is_connected())
+        if now >= heartbeat_at:
+            record('heartbeat', connected=current)
+            heartbeat_at = now + 60
+        try:
+            if current:
+                from monitor_capabilities import supported
+                if await supported(client):
+                    async with asyncio.timeout(90):
+                        await flush(client)
+        except Exception as exc:
+            print('Журнал контроля ожидает центр ('+type(exc).__name__+').', flush=True)
+            await asyncio.sleep(10)
+        await asyncio.sleep(2)
+
+
 async def run(client, notify):
+    tasks = [asyncio.create_task(deliver(client), name='monitor-delivery'),
+             asyncio.create_task(inspect_history(client, notify), name='monitor-inspection')]
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            if task.cancelled():
+                raise RuntimeError('Mandatory monitor component cancelled')
+            task.result()
+        raise RuntimeError('Mandatory monitor component stopped')
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def inspect_history(client, notify):
     import config
     from telethon import events
     from telegram_safety import default_journal
@@ -537,8 +588,8 @@ async def run(client, notify):
             if previous_exception_handler:previous_exception_handler(loop,context)
             else:loop.default_exception_handler(context)
     loop.set_exception_handler(on_exception)
-    heartbeat_at=0
     check_at=0
+    maintenance_at=0
     sessions_at=0
     connected=None
     ttl_at=0
@@ -549,10 +600,9 @@ async def run(client, notify):
             if current!=connected:
                 record('connection',connected=current)
                 connected=current
-            if now>=heartbeat_at:
-                record('heartbeat',connected=current)
+            if now >= maintenance_at:
                 _default.prune_acknowledged()
-                heartbeat_at=now+300
+                maintenance_at = now + 300
             if now>=ttl_at and current:
                 ttl_at=now+900
                 try:
@@ -575,7 +625,8 @@ async def run(client, notify):
                 sessions_at=now+900
                 try:
                     from telethon.tl.functions.account import GetAuthorizationsRequest
-                    result=await client(GetAuthorizationsRequest())
+                    async with asyncio.timeout(15):
+                        result=await client(GetAuthorizationsRequest())
                     sessions=[dict(fingerprint=hashlib.sha256(str(a.hash).encode()).hexdigest(),
                                    current=bool(a.current),created_at=int(a.date_created.timestamp()),
                                    last_active=int(a.date_active.timestamp())) for a in result.authorizations[:100]]
@@ -588,7 +639,8 @@ async def run(client, notify):
                     with closing(_default.connect()) as db:
                         ids=[r[0] for r in db.execute('SELECT message_id FROM monitor_messages WHERE misses<2 ORDER BY checked_at,message_id LIMIT 50')]
                     if ids:
-                        found=await client.get_messages(None,ids=ids)
+                        async with asyncio.timeout(15):
+                            found=await client.get_messages(None,ids=ids)
                         present={m.id for m in found if m and type(m).__name__!='MessageEmpty'}
                         missing=_default.apply_check(ids,present)
                         if missing:
@@ -599,12 +651,6 @@ async def run(client, notify):
                     print('Проверка истории отложена ('+type(exc).__name__+').',flush=True)
             from incident_isolation import notify_pending
             await notify_pending(_default,notify)
-            try:
-                from monitor_capabilities import supported
-                if await supported(client):await flush(client)
-            except Exception as exc:
-                print('Журнал контроля ожидает центр ('+type(exc).__name__+').',flush=True)
-                await asyncio.sleep(30)
             await asyncio.sleep(2)
     finally:
         logging.getLogger().removeHandler(handler)
