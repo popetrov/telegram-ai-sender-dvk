@@ -16,9 +16,10 @@ def register(application,store,key):
 
 async def supported(client):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    from access_runtime import transport_lock
+    from access_runtime import reports_route as route
     from safe_telegram import _report_permission
-    authority=os.environ['ACCESS_BOT_USERNAME'].lstrip('@');now=time.monotonic()
+    authority, transport_lock = route()
+    now=time.monotonic()
     cache_key=(id(client),authority)
     previous=_cached.get(cache_key)
     if previous and previous[0]>now:return previous[1]

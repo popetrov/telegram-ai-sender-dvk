@@ -144,3 +144,13 @@ async def stop(task):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+_reports_lock = asyncio.Lock()
+
+
+def reports_route():
+    primary = os.environ['ACCESS_BOT_USERNAME'].strip().lstrip('@')
+    reports = os.getenv('DVK_REPORTS_BOT_USERNAME', 'dvk_finance_reports2026_bot').strip().lstrip('@')
+    if reports and reports.casefold() != primary.casefold():
+        return reports, _reports_lock
+    return primary, transport_lock

@@ -19,10 +19,10 @@ RESPONSE = 'DVK_BITRIX_FOLLOWUP_RESULT_V1'
 log = logging.getLogger(__name__)
 
 
-def make_request(public, subject, action, job=None):
+def make_request(public, subject, action, job=None, *, request_id=None):
     private = X25519PrivateKey.generate()
     data = dict(protocol=REQUEST, subject=subject, action=action, job=job,
-                request_id=uuid.uuid4().hex, created=int(time.time()),
+                request_id=request_id or uuid.uuid4().hex, created=int(time.time()),
                 reply_key=public_text(private))
     return data, private, encrypt(public, data)
 
@@ -114,10 +114,11 @@ def register_receiver(application, broker):
     )
 
 
-async def call_center(client, authority, encryption, signing, lock, access, subject, action, job=None):
+async def call_center(client, authority, encryption, signing, lock, access, subject, action,
+                      job=None, *, request_id=None):
     access()
-    request, private, packet = make_request(encryption, subject, action, job)
-    async with lock:
+    request, private, packet = make_request(encryption, subject, action, job, request_id=request_id)
+    async with asyncio.timeout(90), lock:
         access()
         stream = io.BytesIO(packet)
         stream.name = 'bitrix-followup.dvk'

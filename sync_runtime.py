@@ -105,9 +105,11 @@ async def start(client):
                                      compress=wire_data['data']['table'] == 'sync_batch')
                     stream = io.BytesIO(packet)
                     stream.name = 'encrypted.dvk'
-                    async with transport_lock:
-                        async with client.conversation(authority, timeout=180, exclusive=True) as conversation:
-                            sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True, silent=True)
+                    from access_runtime import reports_route as route
+                    report_authority, report_lock = route()
+                    async with report_lock:
+                        async with client.conversation(report_authority, timeout=180, exclusive=True) as conversation:
+                            sent = await client.send_file(report_authority, stream, caption='DVK_SYNC_V1', force_document=True, silent=True)
                             async with asyncio.timeout(180):
                                 while True:
                                     response = await conversation.get_response(sent)

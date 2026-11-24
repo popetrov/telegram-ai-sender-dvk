@@ -121,7 +121,9 @@ class StartupUpdateTests(unittest.TestCase):
         for extra in ({'prerelease':True},{'draft':True},{'tag_name':'v2.0.19'},{}):
             release = dict(tag_name='v2.0.20',assets=[],**{k:v for k,v in extra.items() if k!='tag_name'})
             release.update(extra)
-            with patch.object(update,'fetch',return_value=json.dumps(release).encode()):
+            from urllib.error import URLError
+            with (patch.object(update,'stable_release_url',side_effect=URLError('offline test')),
+                  patch.object(update,'fetch',return_value=json.dumps(release).encode())):
                 self.assertIsNone(update.latest_bundle('2.0.19'))
 
     def test_legacy_bridge_matches_old_allowlist_and_preserves_real_local_catalog(self):
@@ -175,7 +177,10 @@ class StartupUpdateTests(unittest.TestCase):
             target=package_source/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/name,target)
         (package_source/'version.txt').write_text(self.next_version)
         package=self.root.with_name('next-manager.zip');build_package(package_source,package)
-        bundle_zip=self.root.with_name('next-transition.zip');build_transition(ROOT,bundle_zip,package)
+        bundle_zip=self.root.with_name('next-transition.zip')
+        profiles=json.loads((self.bundle/'legacy-baselines.json').read_text('utf-8'))
+        with patch('build_platform_release.legacy_profiles',return_value=profiles):
+            build_transition(ROOT,bundle_zip,package)
         bundle=self.root.with_name('next-bundle');bundle.mkdir();update.unpack_bundle(bundle_zip.read_bytes(),bundle)
         with FileLock(self.root/'data/sender.lock'),patch('transition_setup.subprocess.run'),patch('installation_inventory.processes',return_value=([],True)):
             update.prepare_unified_update(self.root,bundle,'v'+self.next_version)

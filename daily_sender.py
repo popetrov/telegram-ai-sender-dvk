@@ -15,6 +15,14 @@ from access_lease import AccessDenied
 log = logging.getLogger(__name__)
 ZONE = timezone(timedelta(hours=4))
 STATE = Path('data/bitrix-followup-auto-day')
+JOB_OUTCOME = {
+    'отложено, не удалось проверить адрес': 'address_timeout',
+    'отложено, центр не подтвердил резервирование': 'permit_timeout',
+    'пропущено, username недоступен': 'address_unavailable',
+    'пропущено, Telegram-аккаунт не совпал': 'account_mismatch',
+    'пропущено, проверьте контакт': 'contact_excluded',
+    'отложено, задание изменилось': 'job_changed',
+}
 
 
 def pause_snapshot(bot, exc):
@@ -62,7 +70,7 @@ class WarmupStatus:
 
 
 async def run(application, client):
-    from access_runtime import wait_initial_access, account_id
+    from access_runtime import wait_initial_access
     import bot
     import bitrix_followup_sender as sender
     from unified_install import atomic
@@ -83,6 +91,13 @@ async def run(application, client):
         stage = 'access_check'
         try:
             assigned = sender.authorized().get('bitrix_followup_auto') is True
+            if assigned:
+                try:
+                    subject = sender.authorized()['subject']
+                    await sender.reconcile_receipts(client, subject)
+                    sender.publish_receipts(subject)
+                except Exception as exc:
+                    log.warning('Warm-up receipt telemetry deferred (%s)', type(exc).__name__)
             if not assigned:
                 monitor.observe('idle', assigned=False, blocker='not_assigned')
             elif bot.queue_is_active(context):
@@ -97,9 +112,11 @@ async def run(application, client):
                     monitor.observe(stage, assigned=True)
                     result = await sender.center(client, 'list_auto')
                     if result.get('ok'):
-                        queued = len(result['jobs'])
-                        sent = 0
-                        for index, job in enumerate(result['jobs']):
+                        jobs = {job['id']: job for job in sender.pending_permits(
+                            sender.authorized()['subject'])}
+                        jobs.update({job['id']: job for job in result['jobs']})
+                        queued = len(jobs)
+                        for index, job in enumerate(jobs.values()):
                             if job['id'] in unavailable:
                                 continue
                             stage = 'dispatch'
@@ -113,14 +130,17 @@ async def run(application, client):
                                 if index:
                                     await asyncio.sleep(bot.SEND_INTERVAL_SECONDS)
                                 status = await sender.dispatch(client, job, automatic=True)
-                            sent += status == 'отправлено'
+                            if status in JOB_OUTCOME:
+                                try:
+                                    from incident_monitor import record
+                                    record('monitor_warning', source='finance_warmup_job',
+                                           operation=job['id'], reason_code=JOB_OUTCOME[status])
+                                except Exception as exc:
+                                    log.warning('Warm-up job telemetry deferred (%s)', type(exc).__name__)
                             if status == 'пропущено, username недоступен':
                                 unavailable.add(job['id'])
                         monitor.observe('cycle_finished', assigned=True, queued=queued)
                         atomic(STATE, (today+'\n').encode('ascii'))
-                        if sent:
-                            await application.bot.send_message(
-                                account_id, f'Битрикс: отправлено {sent} из {len(result["jobs"])}.')
                     else:
                         monitor.observe('idle', assigned=True, blocker='queue_unavailable')
                 finally:

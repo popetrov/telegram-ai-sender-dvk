@@ -244,6 +244,18 @@ def preserve_finance_forensics(active, payload):
     for name in expected:
         payload[name] = (payload['ttl_pilot_safe_v1.py']
                          if name == 'safe_telegram.py' else current[name])
+    monitor = payload['incident_monitor.py']
+    replacements = {
+        b'    from access_runtime import transport_lock': b'    from access_runtime import reports_route',
+        b"    authority = os.environ['ACCESS_BOT_USERNAME'].lstrip('@')":
+            b'    authority, transport_lock = reports_route()',
+    }
+    for original, replacement in replacements.items():
+        if monitor.count(original) != 1:
+            raise ValueError('Unexpected Finance monitor transport; previous installation retained')
+        monitor = monitor.replace(original, replacement)
+    compile(monitor, 'incident_monitor.py', 'exec')
+    payload['incident_monitor.py'] = monitor
 
 
 def prepare_unified_update(root,bundle,tag):

@@ -337,14 +337,14 @@ def startup(account_id):
 
 
 async def flush(client):
-    from access_runtime import transport_lock
+    from access_runtime import reports_route as route
     from access_lease import canonical
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     from sync_protocol import encrypt, event_digest, verify_receipt
     rows = _default.pending_batch()
     if not rows:
         return False
-    authority = os.environ['ACCESS_BOT_USERNAME'].lstrip('@')
+    authority, transport_lock = route()
     me = await client.get_me()
     subject = os.environ['MANAGER_ID'].strip()+':'+str(me.id)
     installation=_default.identity()
