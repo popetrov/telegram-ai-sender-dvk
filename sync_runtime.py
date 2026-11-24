@@ -14,7 +14,7 @@ from sync_data import next_transfer, acknowledge_transfer, TABLES
 log = logging.getLogger(__name__)
 
 
-def register_receiver(application, store, signing_key, encryption_key, notices=None):
+def register_receiver(application, store, signing_key, encryption_key, notices=None, *, company=None):
     from telegram.ext import MessageHandler, filters
     from monitor_capabilities import register
     register(application,store,signing_key)
@@ -47,7 +47,7 @@ def register_receiver(application, store, signing_key, encryption_key, notices=N
                 from incident_monitor import validate_event
                 validate_event(data['data'].get('row'))
             stage = 'save'
-            store.receive(update.effective_user.id, subject, event_id, digest, data)
+            store.receive(update.effective_user.id, subject, event_id, digest, data, company=company)
             if notices is not None:
                 from incident_monitor import center_notice
                 center_notice(store,notices,update.effective_user.id,event_id,data)
@@ -68,7 +68,25 @@ def register_receiver(application, store, signing_key, encryption_key, notices=N
                 if any(m['account_id'] == account_id and m['company_id'] for m in managers):
                     notices.error('приём данных', exc, account_id)
 
-    application.add_handler(MessageHandler(filters.Document.ALL, receive))
+    workers = asyncio.Semaphore(4)
+    pending = set()
+
+    async def receive_account(update, context, account):
+        try:
+            async with workers:
+                await receive(update, context)
+        finally:
+            pending.discard(account)
+
+    async def dispatch(update, context):
+        if update.effective_chat.type != 'private' or update.effective_message.caption != 'DVK_SYNC_V1':
+            return
+        account = update.effective_user.id
+        if account not in pending:
+            pending.add(account)
+            application.create_task(receive_account(update, context, account), update=update)
+
+    application.add_handler(MessageHandler(filters.Document.ALL, dispatch))
 
 
 async def start(client):
@@ -105,9 +123,11 @@ async def start(client):
                                      compress=wire_data['data']['table'] == 'sync_batch')
                     stream = io.BytesIO(packet)
                     stream.name = 'encrypted.dvk'
-                    async with transport_lock:
-                        async with client.conversation(authority, timeout=180, exclusive=True) as conversation:
-                            sent = await client.send_file(authority, stream, caption='DVK_SYNC_V1', force_document=True, silent=True)
+                    from access_runtime import reports_route
+                    receiver, report_lock = reports_route()
+                    async with report_lock:
+                        async with client.conversation(receiver, timeout=180, exclusive=True) as conversation:
+                            sent = await client.send_file(receiver, stream, caption='DVK_SYNC_V1', force_document=True, silent=True)
                             async with asyncio.timeout(180):
                                 while True:
                                     response = await conversation.get_response(sent)

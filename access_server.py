@@ -314,6 +314,25 @@ def main():
         directory = ManagerDirectory(store)
         admin = create_server(token, admin_id, key, store, role='admin', notices=notices, directory=directory)
         service = create_server(service_token, admin_id, key, store, sync_key, role='service', notices=notices)
+        reports = []
+        from sync_runtime import register_receiver as register_reports
+        report_config = json.loads(os.getenv('DVK_COMPANY_REPORTS_CONFIG', '{}'))
+        companies = {row['id'] for row in store.list_companies()}
+        used_tokens = {token, service_token}
+        if not isinstance(report_config, dict):
+            raise ValueError('Invalid company reports configuration')
+        for company, settings in report_config.items():
+            if company not in companies or not isinstance(settings, dict):
+                raise ValueError('Unknown company in reports configuration')
+            report_token = settings.get('token')
+            username = settings.get('username')
+            if (not isinstance(report_token, str) or not report_token or report_token in used_tokens
+                    or not isinstance(username, str) or not username):
+                raise ValueError('Invalid or reused company reports credentials')
+            used_tokens.add(report_token)
+            app = Application.builder().token(report_token).build()
+            register_reports(app, store, key, sync_key, notices=notices, company=company)
+            reports.append((app, username))
         app_profiles=None
         if (STATE/'telegram-app-profile.private.json').exists():
             from app_profile_server import AppProfileService,register_handlers
@@ -331,7 +350,8 @@ def main():
             register_knowledge(service,broker)
         try:
             asyncio.run(run_center(admin, service, notices, admin_id, STATE, service_username,
-                                    directory=directory,knowledge_clients=knowledge_clients,app_profiles=app_profiles))
+                                    directory=directory,knowledge_clients=knowledge_clients,
+                                    app_profiles=app_profiles,reports=reports))
         except KeyboardInterrupt:
             print('Центр остановлен.')
 

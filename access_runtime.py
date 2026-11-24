@@ -128,3 +128,24 @@ async def stop(task):
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+_reports_lock = asyncio.Lock()
+
+
+def reports_route():
+    """Use a configured receiver only for the company in the signed lease."""
+    import re
+
+    primary = os.environ['ACCESS_BOT_USERNAME'].strip().lstrip('@')
+    if _store is None:
+        return primary, transport_lock
+    try:
+        company = _store.require_access().get('company_id')
+        configured = json.loads(os.getenv('DVK_COMPANY_REPORTS_BOTS', '{}'))
+        name = configured.get(company, '') if isinstance(configured, dict) else ''
+    except (AccessDenied, ValueError):
+        return primary, transport_lock
+    if (isinstance(name, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{4,31}', name)
+            and name.casefold().endswith('bot') and name.casefold() != primary.casefold()):
+        return name, _reports_lock
+    return primary, transport_lock

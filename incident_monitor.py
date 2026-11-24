@@ -242,6 +242,61 @@ class Recorder:
 _default = Recorder(ROOT/'data/incident-monitor.sqlite')
 
 
+def campaign_receipt(db, account, local_id, peer):
+    rows = db.execute("""
+        SELECT DISTINCT mid.value
+          FROM monitor_events origin
+          JOIN monitor_events result
+            ON json_extract(origin.data,'$.run_id')=json_extract(result.data,'$.run_id')
+           AND json_extract(origin.data,'$.evidence.op_id')=json_extract(result.data,'$.evidence.op_id')
+          JOIN json_each(result.data,'$.message_ids') mid
+         WHERE json_extract(origin.data,'$.kind')='forensic_operation'
+           AND json_extract(origin.data,'$.operation')='SendMessageRequest'
+           AND json_extract(origin.data,'$.evidence.origin_table')='messages'
+           AND json_extract(origin.data,'$.evidence.account_id')=?
+           AND json_extract(origin.data,'$.evidence.origin_id')=?
+           AND json_extract(result.data,'$.kind')='send_result'
+           AND json_extract(result.data,'$.peer_id')=?
+           AND mid.type='integer' AND mid.value>0
+         LIMIT 2
+    """, (account, local_id, peer)).fetchall()
+    return rows[0][0] if len(rows) == 1 else None
+
+
+async def reconcile_campaign_receipts(client, account):
+    from database import get_connection, get_manager_id
+    from telethon.tl.types import PeerUser
+
+    with get_connection() as local:
+        rows = local.execute("""SELECT m.id,c.telegram_id FROM messages m
+            JOIN clients c ON c.id=m.client_id
+            WHERE c.manager_id=? AND c.telegram_id>0 AND m.telegram_message_id IS NULL
+              AND m.status IN ('sending','uncertain')
+            ORDER BY m.id DESC LIMIT 20""", (get_manager_id(),)).fetchall()
+    with closing(_default.connect()) as audit:
+        candidates = [(local_id, peer, campaign_receipt(audit, account, local_id, peer))
+                      for local_id, peer in rows]
+    for local_id, peer, mid in candidates:
+        if mid is None:
+            continue
+        try:
+            async with asyncio.timeout(5):
+                entity = await client.get_input_entity(PeerUser(peer))
+                message = await client.get_messages(entity, ids=mid)
+        except Exception:
+            continue
+        sent_at = getattr(message, 'date', None)
+        if (sent_at is None or getattr(message, 'id', None) != mid or not getattr(message, 'out', False)
+                or getattr(getattr(message, 'peer_id', None), 'user_id', None) != peer):
+            continue
+        with get_connection() as local:
+            local.execute("""UPDATE messages SET status='sent',telegram_message_id=?,
+                                    send_error=NULL,sent_at=coalesce(sent_at,?)
+                              WHERE id=? AND telegram_message_id IS NULL
+                                AND status IN ('sending','uncertain')""",
+                          (mid, sent_at.isoformat(), local_id))
+
+
 def record(kind, **fields):
     # Failure of mandatory audit prevents a new application send, rather than hiding it.
     try:
@@ -323,14 +378,14 @@ def startup(account_id):
 
 
 async def flush(client):
-    from access_runtime import transport_lock
+    from access_runtime import reports_route
     from access_lease import canonical
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     from sync_protocol import encrypt, event_digest, verify_receipt
     rows = _default.pending_batch()
     if not rows:
         return False
-    authority = os.environ['ACCESS_BOT_USERNAME'].lstrip('@')
+    authority, transport_lock = reports_route()
     me = await client.get_me()
     subject = os.environ['MANAGER_ID'].strip()+':'+str(me.id)
     installation=_default.identity()

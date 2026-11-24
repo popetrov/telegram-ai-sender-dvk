@@ -5,7 +5,27 @@ import logging
 from telegram.error import NetworkError
 
 
-async def run_center(admin, service, notices, admin_id, state, expected_username, *, directory=None, knowledge_clients=(),app_profiles=None):
+async def run_company_reports(app, username):
+    while True:
+        try:
+            async with app:
+                if app.bot.username.casefold() != username.casefold():
+                    raise ValueError('Unexpected reports bot')
+                try:
+                    await app.start()
+                    await app.updater.start_polling(bootstrap_retries=0)
+                    await asyncio.Event().wait()
+                finally:
+                    if app.updater.running:
+                        await app.updater.stop()
+                    if app.running:
+                        await app.stop()
+        except Exception as exc:
+            logging.getLogger(__name__).warning('Company reports bot unavailable (%s)', type(exc).__name__)
+            await asyncio.sleep(30)
+
+
+async def run_center(admin, service, notices, admin_id, state, expected_username, *, directory=None, knowledge_clients=(),app_profiles=None, reports=()):
     started, polling, tasks = [], [], []
     async with AsyncExitStack() as stack:
         try:
@@ -31,6 +51,8 @@ async def run_center(admin, service, notices, admin_id, state, expected_username
                 await app.updater.start_polling(bootstrap_retries=3, error_callback=on_poll_error)
                 polling.append(app)
             tasks.append(asyncio.create_task(notices.run(admin.bot, admin_id)))
+            tasks.extend(asyncio.create_task(run_company_reports(app, username))
+                         for app, username in reports)
             if app_profiles is not None:
                 tasks.append(asyncio.create_task(app_profiles.loop()))
             if directory is not None and (state / 'sheets.json').exists():

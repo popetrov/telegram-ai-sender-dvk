@@ -106,14 +106,16 @@ class AuthorityStore:
         with self.connection() as db:
             return [dict(r) for r in db.execute('SELECT * FROM companies ORDER BY id')]
 
-    def receive(self, account_id, subject, event_id, digest, payload):
+    def receive(self, account_id, subject, event_id, digest, payload, *, company=None):
         # Revoked/expired managers may still deliver previously collected data.
         if payload.get('data', {}).get('table') == 'sync_batch':
-            return self.receive_batch(account_id, subject, event_id, digest, payload)
+            return self.receive_batch(account_id, subject, event_id, digest, payload, company=company)
         with self.connection() as db:
             manager = db.execute('SELECT * FROM managers WHERE account_id=?', (account_id,)).fetchone()
             if not manager or manager['subject'] != subject or not manager['company_id']:
                 raise ValueError('Unbound identity')
+            if company is not None and manager['company_id'] != company:
+                raise ValueError('Report belongs to another company')
             if payload.get('data', {}).get('table') == 'sync_fragment':
                 row = payload['data']['row']
                 parent, original_digest = row['parent'], row['digest']
@@ -167,7 +169,7 @@ class AuthorityStore:
                        (account_id, event_id, digest, json.dumps(payload, ensure_ascii=False),
                         int(time.time()), manager['company_id'], subject))
 
-    def receive_batch(self, account_id, subject, event_id, digest, payload):
+    def receive_batch(self, account_id, subject, event_id, digest, payload, *, company=None):
         from sync_protocol import batch_members, event_digest
         members = batch_members(payload)
         if digest != event_digest(payload) or event_id != digest[:32]:
@@ -176,6 +178,8 @@ class AuthorityStore:
             manager = db.execute('SELECT * FROM managers WHERE account_id=?', (account_id,)).fetchone()
             if not manager or manager['subject'] != subject or not manager['company_id']:
                 raise ValueError('Unbound identity')
+            if company is not None and manager['company_id'] != company:
+                raise ValueError('Report belongs to another company')
             for member_id, member in members:
                 if member.get('data',{}).get('table')=='monitor_events':
                     from incident_monitor import validate_bound_event

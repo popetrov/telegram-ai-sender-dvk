@@ -195,8 +195,14 @@ async def main():
         await ensure_telegram_authorized()
         await connect()
         import incident_monitor
-        incident_monitor.startup((await client.get_me()).id)
+        telegram_account = (await client.get_me()).id
+        incident_monitor.startup(telegram_account)
         access_task = await access_runtime.start(client)
+        try:
+            async with asyncio.timeout(15):
+                await incident_monitor.reconcile_campaign_receipts(client, telegram_account)
+        except Exception as exc:
+            print('Сверка квитанций отложена ('+type(exc).__name__+').', flush=True)
         try:
             import service_reports_runtime
             reporting_task = await service_reports_runtime.start(client,Path.cwd())
