@@ -77,6 +77,7 @@ class ProtectedTelegramClient(TelegramClient):
         self.safety_journal = safety_journal if safety_journal is not None else default_journal()
         self._safety_failed = False
         self._service_capability = object()
+        self._ttl_capability = object()
         super().__init__(*args, **kwargs)
         self._guard_sender(self._sender)
 
@@ -140,9 +141,25 @@ class ProtectedTelegramClient(TelegramClient):
                        'Telegram safety: request blocked. Incident: ' + code)
         raise TelegramDeletionBlocked('Защита заблокировала изменение истории Telegram. Код: ' + code)
 
+    async def disable_pilot_timer(self, peer, account_id):
+        from telethon.tl import functions, types
+        from ttl_pilot import is_target, scope
+
+        if account_id != self._self_id or not isinstance(peer, types.InputPeerUser):
+            raise PermissionError('Invalid timer pilot account or peer')
+        key, targets = scope(account_id)
+        if not is_target(peer.user_id, key, targets):
+            raise PermissionError('Dialog is outside the timer pilot')
+        request = functions.messages.SetHistoryTTLRequest(peer=peer, period=0)
+        request._dvk_ttl_grant = (self._ttl_capability, bytes(request))
+        return await self(request, flood_sleep_threshold=0)
+
     def _check_request(self, request):
         operation = forbidden_operation(request)
-        if operation:
+        grant = getattr(request, '_dvk_ttl_grant', None)
+        pilot_timer = (operation == 'SetHistoryTTLRequest' and grant is not None
+                       and grant == (self._ttl_capability, bytes(request)))
+        if operation and not pilot_timer:
             self._deny(operation,request)
         if ephemeral_media(request):
             self._deny('ephemeral_media_ttl',request)

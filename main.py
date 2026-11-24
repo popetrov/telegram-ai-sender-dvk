@@ -211,6 +211,8 @@ async def main():
         print("Excel-бот запущен.")
         print("Контроль безопасного обновления включён.")
 
+        from ttl_pilot import register as register_ttl_pilot
+        register_ttl_pilot(bot, client, (await client.get_me()).id)
         await bot.initialize()
         await bot.start()
         await bot.updater.start_polling()

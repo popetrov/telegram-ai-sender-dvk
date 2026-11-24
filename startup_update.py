@@ -230,6 +230,22 @@ def prepare_update(source, candidate, bundle, tag):
                    env={**os.environ,'PYTHONIOENCODING':'utf-8'})
 
 
+def preserve_finance_forensics(active, payload):
+    """Carry forward the exact installed Sokolova v1 compatibility case."""
+    expected = {'forensic_cases.py': '54185a5562b5ebe6f30e658fbcd1f1c3d8c17763b78c13caf3f29aa4587c875d', 'incident_monitor.py': '09930817cb767ad1ebae9a3e510e03bc29a3a7fe94eb2cde167a50b60c07657d', 'incident_isolation.py': '2f00606791b9efda654aff414b1a6319fbce341ce94dcb394fa50249ceb58cec', 'safe_telegram.py': '083f9984cb807633c349127086df20e70f624847fb6e2b3624e7ef217d2822b0'}
+    current = {name: (active / name).read_bytes() for name in expected
+               if (active / name).is_file()}
+    matches = {name for name, data in current.items()
+               if hashlib.sha256(data).hexdigest() == expected[name]}
+    if not matches:
+        return
+    if matches != set(expected):
+        raise ValueError('Partial Finance forensic patch; previous installation retained')
+    for name in expected:
+        payload[name] = (payload['ttl_pilot_safe_v1.py']
+                         if name == 'safe_telegram.py' else current[name])
+
+
 def prepare_unified_update(root,bundle,tag):
     """Incoming full-package updater. Caller holds permanent startup/sender locks."""
     import importlib.util
@@ -240,7 +256,8 @@ def prepare_unified_update(root,bundle,tag):
     meta,payload=manual_update.verify_package(bundle/'manager-package.zip',manifest['files']['manager-package.zip'])
     if version(meta['version'])!=version(tag):raise ValueError('Update version mismatch')
     current=load_unified(root)
-    current.runtime(root)  # attest old code, not permanent launcher stubs
+    active = current.runtime(root)  # attest old code, not permanent launcher stubs
+    preserve_finance_forensics(active, payload)
     for helper in ('installation_inventory.py',):
         (bundle/helper).write_bytes(payload[helper])
     module=bundle/'unified_install.py';module.write_bytes(payload['unified_install.py'])
