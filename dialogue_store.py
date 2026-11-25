@@ -271,7 +271,7 @@ class DialogueStore:
                 (action_id,thread_id,action_key,kind,text,expected_revision,due_at,int(self.clock())))
             return action_id
 
-    def claim_action(self, action_id):
+    def claim_action(self, action_id, *, transform_text=None):
         """Reserve before network I/O. 'sending' survives crashes and is never retried here."""
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -290,8 +290,11 @@ class DialogueStore:
                        else thread['state'] in {'waiting','engaged','later'})
             if not allowed or not thread['history_complete'] or thread['revision']!=action['revision']:
                 raise StaleDialogue('Decision no longer matches current history')
-            db.execute("UPDATE dialogue_actions SET status='sending' WHERE id=?",(action_id,))
-            return dict(action)
+            action = dict(action)
+            if transform_text is not None:
+                action['text'] = transform_text(action['text'])
+            db.execute("UPDATE dialogue_actions SET status='sending',text=? WHERE id=?",(action['text'],action_id))
+            return action
 
     def finish_action(self, action_id, *, status, telegram_id=None):
         if status not in {'sent','uncertain','not_sent'}:

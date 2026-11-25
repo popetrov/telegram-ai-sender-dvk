@@ -1192,8 +1192,12 @@ async def prepare_one_client(
     try:
         sender_fields = {}
         from ai import normalize_product
-        if normalize_product(product) in {'Право_ООО','Право_ИП'}:
+        normalized_product = normalize_product(product)
+        if normalized_product in {'Право_ООО','Право_ИП'}:
             sender_fields['sender_name'] = await legal_sender_name()
+        elif normalized_product in {'БГ', 'Кредит'}:
+            from dialogue_sender import resolve as sender_profile
+            sender_fields['sender_identity'] = await sender_profile(telegram_client, access_runtime.account_id)
         analysis = await asyncio.to_thread(
             generate_company_analysis,
             inn,
@@ -1581,6 +1585,9 @@ async def _send_one_prepared_message(
     username = item["username"]
     product = item["product"]
     final_message = item["final_message"]
+    if product in {"БГ", "Кредит"}:
+        from dialogue_send_gate import finance_client_text
+        final_message = finance_client_text(final_message)
 
     peerflood_retry = is_peerflood_retry(item)
     floodwait_retry = is_floodwait_retry(item)

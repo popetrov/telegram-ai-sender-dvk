@@ -111,6 +111,7 @@ def generate_company_analysis(
     product,
     fields=None,
     sender_name=None,
+    sender_identity=None,
 ):
     from context_adapters import apply_context_adapters
     catalog = get_catalog()
@@ -121,6 +122,11 @@ def generate_company_analysis(
                   username=str(username or "").strip())
     prompt_file = settings["prompt"]
     prompt_text = catalog.render(normalized_product, inputs)
+    if normalized_product in {'БГ', 'Кредит'} and sender_identity is not None:
+        from dialogue_sender import instructions as sender_rules
+        prompt_text += '\n' + sender_rules(sender_identity)
+    if normalized_product in {'БГ', 'Кредит'}:
+        prompt_text += '\nВ сообщении клиенту запрещено тире. Ставь точку или запятую. Дефис внутри слова допустим.\n'
     if normalized_product in {'Право_ООО','Право_ИП'}:
         import re
         if not sender_name:
@@ -164,6 +170,9 @@ def generate_company_analysis(
 
     # Извлекаем готовое сообщение сразу после получения ответа.
     final_message = extract_message_from_markers(raw_result)
+    if normalized_product in {'БГ', 'Кредит'}:
+        from dialogue_send_gate import finance_client_text
+        final_message = finance_client_text(final_message)
 
     return {
         "raw_result": raw_result,

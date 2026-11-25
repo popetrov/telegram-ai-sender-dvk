@@ -609,12 +609,16 @@ class DialogueRuntime:
             allowed=(thread['state']=='opt_out' if action['kind']=='opt_out_ack' else thread['state'] in {'waiting','engaged','later'})
             if not current or current['status']!='pending' or not allowed:return
             if not can_send(thread,action['kind']):return
-            self.store.claim_action(action['id'])
+            if thread.get('business_id') == 'dvk_finance':
+                from dialogue_send_gate import finance_client_text
+                current = self.store.claim_action(action['id'], transform_text=finance_client_text)
+            else:
+                current = self.store.claim_action(action['id'])
             self.inflight=True;self.outgoing_buffer=[]
             try:
                 from forensic_trace import origin
                 with origin('warmup' if action['kind']=='calendar' else 'auto_reply','dialogue_actions',action['id']):
-                    sent=await self.client.send_message(self.peer,action['text'],parse_mode=None)
+                    sent=await self.client.send_message(self.peer,current['text'],parse_mode=None)
             except Exception as exc:
                 self.store.finish_action(action['id'],status='uncertain')
                 thread,_=self.store.snapshot(self.thread_id)
