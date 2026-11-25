@@ -237,6 +237,13 @@ def preserve_finance_forensics(active, payload):
                if (active / name).is_file()}
     matches = {name for name, data in current.items()
                if hashlib.sha256(data).hexdigest() == expected[name]}
+    # Finance 2.0.49 kept the v1 forensic files but installed its TTL-aware
+    # sender guard. The two exact guard hashes are valid migration sources.
+    ttl_guard = current.get('safe_telegram.py')
+    if (ttl_guard is not None and hashlib.sha256(ttl_guard).hexdigest() ==
+            'ba78abf2b0e832bd0c1335b182459285d9ec33fa18576b049155f1901d640308'):
+        if matches:
+            matches.add('safe_telegram.py')
     if not matches:
         return
     if matches != set(expected):
