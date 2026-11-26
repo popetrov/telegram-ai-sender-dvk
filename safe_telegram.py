@@ -166,6 +166,11 @@ class ProtectedTelegramClient(TelegramClient):
         for item in requests_in(request):
             name = type(item).__name__
             if name.startswith(('Send', 'Forward', 'Edit')) or name == 'StartBotRequest':
+                target = (getattr(item, 'peer', None)
+                          or getattr(item, 'to_peer', None)
+                          or getattr(item, 'user_id', None))
+                if target == 464900452 or getattr(target, 'user_id', None) == 464900452:
+                    raise PermissionError('Recipient has a permanent no-contact restriction.')
                 allowed = _report_permission.get()
                 peer = getattr(getattr(item, 'peer', None) or getattr(item,'to_peer',None), 'user_id', None)
                 if (name in ('SendMessageRequest','SendMediaRequest') and allowed is not None
