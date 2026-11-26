@@ -610,8 +610,17 @@ class DialogueRuntime:
             if not current or current['status']!='pending' or not allowed:return
             if not can_send(thread,action['kind']):return
             if thread.get('business_id') == 'dvk_finance':
-                from dialogue_send_gate import finance_client_text
-                current = self.store.claim_action(action['id'], transform_text=finance_client_text)
+                from dialogue_sender import prepare_client_text, resolve
+                from dialogue_knowledge import KnowledgeUnavailable
+                try:
+                    identity = await resolve(self.client, self.account_id)
+                    current = self.store.claim_action(
+                        action['id'], transform_text=lambda text: prepare_client_text(text, identity))
+                except KnowledgeUnavailable:
+                    self.store.handoff(self.thread_id, event_key='sender_identity:'+action['id'],
+                        event_type='delivery', summary='Проверьте имя и род отправителя в автоответе.',
+                        pause=True, expected_revision=thread['revision'])
+                    return
             else:
                 current = self.store.claim_action(action['id'])
             self.inflight=True;self.outgoing_buffer=[]

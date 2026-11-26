@@ -36,5 +36,24 @@ def invalid_self_presentation(text,identity):
  for match in re.finditer(r'(?:[Мм]еня\s+зовут|[Мм]ое\s+имя|[Мм]оё\s+имя|[Ээ]то\s+я[,—\s]*|\b[Яя])\s+([А-ЯЁA-Z][а-яёa-z]+)',text):
   if match[1].casefold()!=identity['first_name'].casefold():return True
  if re.search(r'\b(?:я|это)\s*(?:[-—]\s*)?(?:(?:ваш[а]?|его|е[её]|ии|виртуальн\w*|цифров\w*)[-\s]+)*(?:помощни[кц]\w*|ассистент\w*)\b',text,re.I):return True
- forms=r'(?:\bя\s+(?:уже\s+)?|^|[.!?]\s+)(?:понял|посмотрел|проверил|готов|рад)\b' if identity['grammatical_gender']=='female' else r'(?:\bя\s+(?:уже\s+)?|^|[.!?]\s+)(?:поняла|посмотрела|проверила|готова|рада)\b' if identity['grammatical_gender']=='male' else r'(?!)'
- return bool(re.search(forms,text,re.I))
+ # A polite lead-in still leaves the following verb in the sender's voice.
+ lead=r'(?:\bя\s+(?:уже\s+)?|(?:^|[.!?\n]\s*)(?:(?:спасибо|благодарю|да|хорошо)[,!:]\s*)?)'
+ masculine=r'(?:понял|посмотрел|проверил|уточнил|готов|рад)'
+ feminine=r'(?:поняла|посмотрела|проверила|уточнила|готова|рада)'
+ gender=identity['grammatical_gender']
+ forms={'female':masculine,'male':feminine,'neutral':masculine+'|'+feminine}[gender]
+ return bool(re.search(lead+r'(?:'+forms+r')\b',text,re.I))
+
+_COURTESY_POSITION = re.compile(
+    r'(^|[.!?]\s+)(?:спасибо|благодарю),\s+(?:я\s+)?понял[а]?\s+вашу позицию(?=[.!?]|$)',
+    re.I,
+)
+
+
+def prepare_client_text(text, identity):
+    from dialogue_send_gate import finance_client_text
+    text = _COURTESY_POSITION.sub(lambda match: match[1] + 'Спасибо за ответ', text)
+    text = finance_client_text(text)
+    if invalid_self_presentation(text, identity):
+        raise KnowledgeUnavailable('Проверьте имя и род отправителя в сообщении.')
+    return text

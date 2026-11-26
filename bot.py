@@ -1586,8 +1586,13 @@ async def _send_one_prepared_message(
     product = item["product"]
     final_message = item["final_message"]
     if product in {"БГ", "Кредит"}:
-        from dialogue_send_gate import finance_client_text
-        final_message = finance_client_text(final_message)
+        from dialogue_knowledge import KnowledgeUnavailable
+        from dialogue_sender import prepare_client_text, resolve
+        try:
+            identity = await resolve(telegram_client, access_runtime.account_id)
+            final_message = prepare_client_text(final_message, identity)
+        except KnowledgeUnavailable:
+            return "manual_review", "Проверьте имя и род отправителя в черновике.", None
 
     peerflood_retry = is_peerflood_retry(item)
     floodwait_retry = is_floodwait_retry(item)

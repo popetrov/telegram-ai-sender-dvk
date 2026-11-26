@@ -266,6 +266,10 @@ class DialogueAI:
         if sender is not None and invalid_self_presentation(text,sender):
             raise KnowledgeUnavailable('Sender identity mismatch after draft refinement')
         if finance:
-            from dialogue_send_gate import finance_client_text
-            text = finance_client_text(text)
+            if sender is not None:
+                from dialogue_sender import prepare_client_text
+                text = prepare_client_text(text, sender)
+            else:
+                from dialogue_send_gate import finance_client_text
+                text = finance_client_text(text)
         return text

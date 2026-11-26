@@ -173,6 +173,9 @@ def generate_company_analysis(
     if normalized_product in {'БГ', 'Кредит'}:
         from dialogue_send_gate import finance_client_text
         final_message = finance_client_text(final_message)
+        if final_message and sender_identity is not None:
+            from dialogue_sender import prepare_client_text
+            final_message = prepare_client_text(final_message, sender_identity)
 
     return {
         "raw_result": raw_result,
